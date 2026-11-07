@@ -1,0 +1,89 @@
+{
+ "_request": "https://data.elexon.co.uk/bmrs/api/v1/datasets/BOD/stream?from=2025-03-01T05%3A00Z&to=2025-03-01T06%3A00Z&bmUnit=T_SGRWO-1",
+ "response": [
+  {
+   "dataset": "BOD",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 13,
+   "timeFrom": "2025-03-01T06:00:00Z",
+   "levelFrom": -500,
+   "timeTo": "2025-03-01T06:30:00Z",
+   "levelTo": -500,
+   "pairId": -1,
+   "offer": 50.0,
+   "bid": -0.7,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  },
+  {
+   "dataset": "BOD",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 13,
+   "timeFrom": "2025-03-01T06:00:00Z",
+   "levelFrom": 500,
+   "timeTo": "2025-03-01T06:30:00Z",
+   "levelTo": 500,
+   "pairId": 1,
+   "offer": 1500.0,
+   "bid": 100.0,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  },
+  {
+   "dataset": "BOD",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 12,
+   "timeFrom": "2025-03-01T05:30:00Z",
+   "levelFrom": -500,
+   "timeTo": "2025-03-01T06:00:00Z",
+   "levelTo": -500,
+   "pairId": -1,
+   "offer": 50.0,
+   "bid": -0.7,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  },
+  {
+   "dataset": "BOD",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 12,
+   "timeFrom": "2025-03-01T05:30:00Z",
+   "levelFrom": 500,
+   "timeTo": "2025-03-01T06:00:00Z",
+   "levelTo": 500,
+   "pairId": 1,
+   "offer": 1500.0,
+   "bid": 100.0,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  },
+  {
+   "dataset": "BOD",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 11,
+   "timeFrom": "2025-03-01T05:00:00Z",
+   "levelFrom": -500,
+   "timeTo": "2025-03-01T05:30:00Z",
+   "levelTo": -500,
+   "pairId": -1,
+   "offer": 50.0,
+   "bid": -0.7,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  },
+  {
+   "dataset": "BOD",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 11,
+   "timeFrom": "2025-03-01T05:00:00Z",
+   "levelFrom": 500,
+   "timeTo": "2025-03-01T05:30:00Z",
+   "levelTo": 500,
+   "pairId": 1,
+   "offer": 1500.0,
+   "bid": 100.0,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  }
+ ]
+}

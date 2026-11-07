@@ -1,0 +1,59 @@
+{
+ "_request": "https://data.elexon.co.uk/bmrs/api/v1/datasets/NDF/stream?publishDateTimeFrom=2025-03-01T09%3A00Z&publishDateTimeTo=2025-03-01T10%3A00Z",
+ "response": [
+  {
+   "dataset": "NDF",
+   "demand": 27636,
+   "publishTime": "2025-03-01T09:46:00Z",
+   "startTime": "2025-03-01T10:00:00Z",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 21,
+   "boundary": "N"
+  },
+  {
+   "dataset": "NDF",
+   "demand": 27130,
+   "publishTime": "2025-03-01T09:46:00Z",
+   "startTime": "2025-03-01T10:30:00Z",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 22,
+   "boundary": "N"
+  },
+  {
+   "dataset": "NDF",
+   "demand": 26580,
+   "publishTime": "2025-03-01T09:46:00Z",
+   "startTime": "2025-03-01T11:00:00Z",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 23,
+   "boundary": "N"
+  },
+  {
+   "dataset": "NDF",
+   "demand": 26287,
+   "publishTime": "2025-03-01T09:46:00Z",
+   "startTime": "2025-03-01T11:30:00Z",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 24,
+   "boundary": "N"
+  },
+  {
+   "dataset": "NDF",
+   "demand": 26210,
+   "publishTime": "2025-03-01T09:46:00Z",
+   "startTime": "2025-03-01T12:00:00Z",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 25,
+   "boundary": "N"
+  },
+  {
+   "dataset": "NDF",
+   "demand": 26151,
+   "publishTime": "2025-03-01T09:46:00Z",
+   "startTime": "2025-03-01T12:30:00Z",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 26,
+   "boundary": "N"
+  }
+ ]
+}
