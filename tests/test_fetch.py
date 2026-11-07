@@ -27,11 +27,87 @@ def test_month_windows_empty_when_end_not_after_start():
     assert fetch.month_windows(utc(2024, 1, 1), utc(2024, 1, 1)) == []
 
 
-def test_batches_are_stable_and_sorted():
-    ids = ["T_B-1", "T_A-1", "T_C-1", "T_D-1", "T_E-1"]
-    b = fetch.batches(ids, size=2)
-    assert b == [["T_A-1", "T_B-1"], ["T_C-1", "T_D-1"], ["T_E-1"]]
-    assert fetch.batches(list(reversed(ids)), size=2) == b
+def test_batches_chunk_in_given_order():
+    ids = ["T_A-1", "T_B-1", "T_C-1", "T_D-1", "T_E-1"]
+    assert fetch.batches(ids, size=2) == [["T_A-1", "T_B-1"], ["T_C-1", "T_D-1"], ["T_E-1"]]
+
+
+def test_stable_unit_order_appends_new_units_so_old_batches_never_shift():
+    # Review #19 point 5: a new BMU in a refreshed reference must not move units between batches.
+    old = ["T_A-1", "T_C-1", "T_E-1"]
+    new = fetch.stable_unit_order(old, ["T_B-1", "T_A-1", "T_C-1", "T_E-1"])
+    assert new == ["T_A-1", "T_C-1", "T_E-1", "T_B-1"]
+    assert fetch.batches(new, size=2)[0] == fetch.batches(old, size=2)[0]
+    assert fetch.stable_unit_order([], ["T_B-1", "T_A-1"]) == ["T_A-1", "T_B-1"]
+
+
+# ---------- review #19 point 1: Elexon `from`/`to` are inclusive and return overlapping records ----------
+
+def test_in_window_keeps_each_record_in_exactly_one_month():
+    # Real behaviour (2025-03-01 probe): from=06:00&to=07:00 returned PN rows starting 05:30 and 07:00.
+    df = pd.DataFrame({"timeFrom": pd.to_datetime(
+        ["2025-03-01T05:30Z", "2025-03-01T06:00Z", "2025-03-01T06:59Z", "2025-03-01T07:00Z"])})
+    kept = fetch.in_window(df, "PN", utc(2025, 3, 1, 6), utc(2025, 3, 1, 7))
+    assert kept["timeFrom"].tolist() == [pd.Timestamp("2025-03-01T06:00Z"),
+                                         pd.Timestamp("2025-03-01T06:59Z")]
+
+
+def test_in_window_b1610_uses_period_start():
+    # halfHourEndTime is the END of the period: 07:00 end = 06:30 start, inside [06:00, 07:00).
+    df = pd.DataFrame({"halfHourEndTime": pd.to_datetime(
+        ["2025-03-01T06:00Z", "2025-03-01T06:30Z", "2025-03-01T07:00Z", "2025-03-01T07:30Z"])})
+    kept = fetch.in_window(df, "B1610", utc(2025, 3, 1, 6), utc(2025, 3, 1, 7))
+    assert kept["halfHourEndTime"].tolist() == [pd.Timestamp("2025-03-01T06:30Z"),
+                                                pd.Timestamp("2025-03-01T07:00Z")]
+
+
+def test_in_window_demand_outturn_untouched():
+    # Settlement-date windows are already disjoint; a BST day starts at 23:00 UTC the day before.
+    df = pd.DataFrame({"startTime": pd.to_datetime(["2025-06-30T23:00Z", "2025-07-01T00:00Z"])})
+    assert len(fetch.in_window(df, "DEMAND_OUTTURN", utc(2025, 7, 1), utc(2025, 8, 1))) == 2
+
+
+def test_in_window_empty_frame():
+    assert fetch.in_window(pd.DataFrame(), "PN", utc(2025, 3, 1), utc(2025, 4, 1)).empty
+
+
+# ---------- review #19 point 2: windows that may still change are never cached as final ----------
+
+def test_window_is_final_only_once_settled():
+    now = utc(2026, 11, 7, 18)
+    assert fetch.is_final(utc(2026, 10, 1), now)            # > 7 days ago
+    assert not fetch.is_final(utc(2026, 11, 1), now)        # recent month end
+    assert not fetch.is_final(utc(2026, 11, 7), now)        # today
+
+
+def test_cache_paths_mark_partial_files(tmp_path):
+    final, partial = fetch.cache_paths(tmp_path / "PN" / "2026-11" / "batch000.parquet")
+    assert final.name == "batch000.parquet"
+    assert partial.name == "batch000.partial.parquet"
+
+
+def test_write_cached_final_replaces_partial(tmp_path):
+    out = tmp_path / "x.parquet"
+    df = pd.DataFrame({"a": [1]})
+    fetch.write_cached(df, out, final=False)
+    assert (tmp_path / "x.partial.parquet").exists() and not out.exists()
+    fetch.write_cached(df, out, final=True)
+    assert out.exists() and not (tmp_path / "x.partial.parquet").exists()
+
+
+# ---------- review #19 point 4: a truncated GB-wide response is never cached ----------
+
+def test_check_complete_rejects_empty_and_truncated():
+    end = utc(2025, 4, 1)
+    ok = pd.DataFrame({"startTime": pd.to_datetime(["2025-03-31T23:30Z"])})
+    fetch.check_complete(ok, "MID", utc(2025, 3, 1), end)
+    for bad in (pd.DataFrame(), pd.DataFrame({"startTime": pd.to_datetime(["2025-03-20T00:00Z"])})):
+        try:
+            fetch.check_complete(bad, "MID", utc(2025, 3, 1), end)
+        except fetch.IncompleteResponse:
+            pass
+        else:
+            raise AssertionError("should have rejected")
 
 
 def test_wind_bmus_from_reference_filters_wind_and_dedupes():
@@ -99,6 +175,12 @@ def test_openmeteo_to_frame_from_real_sample():
     assert str(df["time"].dt.tz) == "UTC"
     assert "wind_speed_100m_previous_day1" in df.columns
     assert len(df) == len(sample["response"]["hourly"]["time"])
+
+
+def test_previous_runs_request_has_no_leaky_day1_fields():
+    # Review #19 point 6: previous_day1 is issued after D-1 10:00 for later hours of day D.
+    assert "previous_day1" not in fetch.OPENMETEO["previous_runs"][1]
+    assert "wind_speed_100m_previous_day2" in fetch.OPENMETEO["previous_runs"][1]
 
 
 def test_year_windows_clip_to_range():

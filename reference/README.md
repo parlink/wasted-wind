@@ -7,21 +7,23 @@ constraint-flagged (`soFlag`) bid acceptances in 2025. The top 50 named Scottish
 supplier aggregate units (`2__*`, `C__*`) that have no single site, and English farms (Greater Gabbard).
 Seagreen, Moray East and Moray West (the Modo validation targets) are all included.
 
-**Capacity.** `capacity_mw` is Elexon's `generationCapacity`, except where the highest Physical Notification
-seen Jan 2024–Nov 2026 is below 85% of it. Those Elexon values are stale, so the observed PN max is used:
+**Capacity.** `capacity_mw` is the highest Physical Notification each BMU declared, Jan 2024–Nov 2026. Elexon's
+`generationCapacity` is often stale: Seagreen's six BMUs sum to 1,773 MW there, against a 1,075 MW farm, and
+South Kyle shows 427 MW for ~240 MW. The observed PN peak is never above Elexon's figure by more than 0.5%,
+and by construction no unit's PN exceeds 1.05 × `capacity_mw` (the CONTRACT invariant).
 
-| BMU | Elexon MW | Used MW |
-| --- | --- | --- |
-| T_SGRWO-1 | 358.0 | 300 |
-| T_SGRWO-2 | 220.0 | 80 |
-| T_SGRWO-3 | 374.6 | 160 |
-| T_SGRWO-5 | 300.0 | 120 |
-| T_GORDW-1 | 86.8 | 70 |
-| T_GORDW-2 | 58.7 | 40 |
-| T_SOKYW-1 | 426.9 | 235 |
-| T_AKGLW-3 | 163.4 | 81 |
+**Per-BMU capacities don't add up to the farm's size for two farms.** Their units take turns peaking:
 
-(Elexon's six Seagreen BMUs sum to 1,773 MW; the farm is 1,075 MW.) No unit's PN exceeds 1.05 × the capacity used.
+| Farm | Σ `capacity_mw` | Max simultaneous PN (whole farm) | Nameplate |
+| --- | --- | --- | --- |
+| Seagreen | 1,158 | 1,102 | 1,075 |
+| Dorenell | 226 | 177 | 177 |
+| Viking | 444 | 444 | 443 |
+
+Every other multi-BMU farm matches within 1 MW. Scaling the BMUs down to the farm total would break the
+per-BMU invariant (Seagreen BMU 6 declares 358 MW), so it isn't done here. **For any farm-level capacity
+(Method B potential, capacity factors, map sizes), use the farm's max simultaneous PN, not Σ `capacity_mw`.**
+`pipeline/reconstruct.py` (#3) computes that; a `farm_capacity_mw` column would need a CONTRACT change.
 
 **Zones.** `north_scotland` = SSEN Transmission area (north of B4), including Kintyre (Beinn an Tuirc) and
 Shetland (Viking). Seagreen lands at Tealing, so it is north of B4. Neart na Gaoithe lands at Torness, so it is south.
