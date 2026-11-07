@@ -16,7 +16,8 @@ against reality:
   perfect/lp  dispatch.optimiser.hindsight_bound: the best any battery could have done with
               perfect knowledge (a linear programme over the whole period); capture ratios use it
 
-Plans are issued at D-1 10:00 from data known then. At midnight the plan is re-run with the
+`plan_issued_at` = D-1 10:00: the plan's market inputs (prices, headroom, our forecast) are all
+as known then. At midnight the plan is re-run with the
 same inputs from the battery's actual state of charge (its own state, known to the operator),
 the "plan, then re-plan from the current state" pattern in the brief.
 
@@ -78,9 +79,10 @@ def expected_price(price: np.ndarray, day_index: int, days: int = 7) -> np.ndarr
     return prev.mean(axis=0) if len(prev) else np.full(48, np.nan)
 
 
-def capture_ratios(revenue: dict) -> dict:
-    """Strategy revenue / perfect-hindsight revenue (CONTRACT §5)."""
-    top = revenue["perfect"]
+def capture_ratios(revenue: dict, ceiling_key: str = "perfect/lp") -> dict:
+    """Revenue / ceiling revenue, keyed by "strategy/dispatcher". The ceiling is the
+    perfect-hindsight LP, so perfect/rule is below 1 (CONTRACT §5 assumed perfect = 1.0)."""
+    top = revenue[ceiling_key]
     return {k: (round(v / top, 4) if top else 0.0) for k, v in revenue.items()}
 
 
@@ -105,7 +107,7 @@ def execute(battery: dict, plan: dict, actual_waste_mwh, price, headroom_mw, soc
             why[i] = plan_reason[i] if planned == "charge" else \
                 f"charging: {w[i]:.0f} MWh being curtailed now (not in the plan)"
         elif planned == "discharge" and soc > 1e-9 and head[i] > 0 and price[i] > 0:
-            mw = min(plan["power_mw"][i], soc / H, head[i])
+            mw = min(p, plan["power_mw"][i], soc / H, head[i])     # never above rated power
             soc -= mw * H
             act[i], mw_out[i], rev[i] = "discharge", mw, mw * H * price[i]
             why[i] = plan_reason[i]
@@ -246,13 +248,10 @@ def main():
             avoided[key] = avoided.get(key, 0.0) + float((g.captured_curtailment_mwh
                                                           * g.period_start.map(ap).fillna(0)).sum())
     tot = sched.groupby("key")[["captured_curtailment_mwh", "revenue_gbp"]].sum()
-    ceiling = float(tot.loc["perfect/lp", "revenue_gbp"])
     keys = ["do_nothing/rule", "reactive/rule", "forecast/rule", "reactive/lp", "forecast/lp",
             "perfect/rule", "perfect/lp"]
 
-    def ratio(v, top):
-        return round(v / top, 4) if top else 0.0
-
+    ratios = capture_ratios(tot.revenue_gbp.to_dict())
     hold = {k: _revenue(sched[sched.key == k], HOLDOUT_MONTHS) for k in keys}
     out = {"period": {"start": f"{periods[0]:%Y-%m-%dT%H:%M:%SZ}",
                       "end": f"{periods[-1] + pd.Timedelta(minutes=30):%Y-%m-%dT%H:%M:%SZ}"},
@@ -262,10 +261,14 @@ def main():
                         "captured_curtailment_mwh": round(float(tot.loc[k, "captured_curtailment_mwh"]), 1),
                         "revenue_gbp": round(float(tot.loc[k, "revenue_gbp"]), 0),
                         "payments_avoided_gbp": round(avoided.get(k, 0.0), 0),
-                        "capture_ratio": ratio(float(tot.loc[k, "revenue_gbp"]), ceiling)} for k in keys],
+                        "capture_ratio": ratios[k]} for k in keys],
            "capture_ratio_basis": "revenue / perfect-hindsight LP revenue (dispatch.optimiser)",
+           "caveats": ["each battery assumes all of its boundary headroom is its own, so fleet £ totals can "
+                       "exceed what the boundary could carry; ratios are comparable, £ sums are optimistic",
+                       "the whole-period LP carries SoC across months, so its Aug-Oct slice is a near-bound, "
+                       "not a strict bound, for that window"],
            "holdout": {"months": list(HOLDOUT_MONTHS),
-                       "capture_ratio": {k: ratio(v, hold["perfect/lp"]) for k, v in hold.items()},
+                       "capture_ratio": capture_ratios(hold),
                        "revenue_gbp": {k: round(v, 0) for k, v in hold.items()}},
            "plan_waste_fraction": tuning}
     (PROCESSED / "scorecard.json").write_text(json.dumps(out, indent=2))

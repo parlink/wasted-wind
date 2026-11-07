@@ -183,9 +183,18 @@ def test_synthetic_month_ordering_runs_in_ci():
 
 
 def test_capture_ratio_definition():
-    res = sc.capture_ratios({"perfect": 200.0, "forecast": 150.0, "reactive": 100.0, "do_nothing": 0.0})
-    assert res == {"perfect": 1.0, "forecast": 0.75, "reactive": 0.5, "do_nothing": 0.0}
+    res = sc.capture_ratios({"perfect/lp": 200.0, "perfect/rule": 180.0, "forecast/rule": 150.0,
+                             "reactive/rule": 100.0, "do_nothing/rule": 0.0})
+    assert res == {"perfect/lp": 1.0, "perfect/rule": 0.9, "forecast/rule": 0.75,
+                   "reactive/rule": 0.5, "do_nothing/rule": 0.0}
 
+
+def test_execute_never_discharges_above_rated_power():
+    # Review #27 follow-up: a plan asking for more than the rating must be capped, or the LP
+    # (which is capped) would no longer be an upper bound.
+    plan = {"action": np.array(["discharge"]), "power_mw": np.array([500.0])}
+    r = sc.execute(BAT, plan, np.zeros(1), np.array([80.0]), np.array([1000.0]), soc_start_mwh=200.0)
+    assert r["power_mw"][0] == pytest.approx(BAT["power_mw"])
 
 # ---------- real output (skips until built) ----------
 
