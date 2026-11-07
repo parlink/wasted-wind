@@ -142,6 +142,15 @@ Primary key: (`battery_id`, `strategy`, `dispatcher`, `period_start`, `plan_issu
 | `revenue_gbp` | float | Discharge MWh × `market_price_gbp_mwh` minus any grid charging cost. |
 | `reason` | str | One line, e.g. `charging: 180 MWh waste forecast behind B4`. |
 
+### `data/processed/live_executed.parquet` (A writes, `dispatch/live.py`)
+
+What the live batteries actually did, one row per `battery_id` per elapsed `period_start` (primary key
+(`battery_id`, `period_start`); a later run overwrites the same half hour). Same columns as `schedules.parquet`,
+`strategy` = `forecast`, `dispatcher` = `lp`, `plan_issued_at` = the plan that was executed. `action`, `power_mw`,
+`soc_mwh`, `captured_curtailment_mwh` and `revenue_gbp` are **executed** values (planned rows in
+`schedules.parquet` keep 0 there). For the Autopilot timeline: executed rows for past half hours, the newest plan
+for future ones. Live plans cover a rolling 24 h from the next half hour.
+
 ### `data/processed/scorecard.json` (A writes, Part 3)
 
 ```json
