@@ -147,3 +147,28 @@ def test_neso_duplicate_at_an_ordinary_time_keeps_one_row():
                         "Limit_MW": [3, 3], "Flow_MW": [0, 0]})
     out = rs.parse_neso(raw)
     assert out.period_start.tolist() == [pd.Timestamp("2025-07-01T11:00Z")]
+
+
+# ---------- temperature for the heat-pump lever (#43 review) ----------
+
+def test_zone_temperature_is_the_mean_over_each_zones_farms():
+    farms = pd.DataFrame({"farm_id": ["a", "b", "c"], "zone": ["north_scotland", "north_scotland", "south_scotland"]})
+    h = pd.date_range("2025-01-01T00:00Z", periods=2, freq="h")
+    w = pd.DataFrame({"farm_id": ["a", "a", "b", "b", "c", "c"], "time": list(h) * 3,
+                      "temperature_2m": [2.0, 4.0, 4.0, 6.0, 8.0, 9.0]})
+    t = rs.zone_temperature(w, farms)
+    assert t.loc[h[0], "north_scotland"] == 3.0 and t.loc[h[1], "south_scotland"] == 9.0
+
+
+def test_assemble_repeats_the_hourly_temperature_for_both_half_hours_and_allows_gaps():
+    idx = pd.date_range("2025-03-01T00:00Z", periods=4, freq="30min", name="period_start")
+    zone = pd.DataFrame({"wind_n_mwh": 1000.0, "wind_s_mwh": 400.0, "curt_n_mwh": 0.0, "curt_s_mwh": 0.0}, index=idx)
+    bounds = pd.DataFrame({"b4_limit_mw": 2400.0, "b4_flow_mw": 2000.0, "b6_limit_mw": 4400.0,
+                           "b6_flow_mw": 3000.0}, index=idx)
+    temp = pd.DataFrame({"north_scotland": [5.0], "south_scotland": [7.0]},
+                        index=pd.DatetimeIndex([pd.Timestamp("2025-03-01T00:00Z")], name="hour_start"))
+    out = rs.assemble(zone, bounds, pd.Series(50.0, index=idx), pd.Series(dtype=float), weekly=None,
+                      temperature=temp)
+    rs.check_output(out)
+    north = out[out.zone == "north_scotland"].set_index("period_start").temperature_2m_c
+    assert north.iloc[:2].tolist() == [5.0, 5.0] and north.iloc[2:].isna().all()   # 01:00 missing -> null

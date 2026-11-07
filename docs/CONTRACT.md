@@ -76,6 +76,7 @@ Primary key: (`zone`, `period_start`).
 | `wind_delivered_mwh` | float | Σ `accepted_mwh` of farms in this zone that period. |
 | `market_price_gbp_mwh` | float | GB market index price that period. GB-wide, so the **same value in both zone rows**. Used for battery revenue. |
 | `gb_demand_mw` | float, nullable | GB demand outturn. Same value in both zone rows. |
+| `temperature_2m_c` | float, nullable | 2 m air temperature, °C: Open-Meteo archive, mean over the zone's farms, hourly value repeated for both half hours. Null where the archive has no value yet (it lags ~5 days). For the simulator's heat-pump lever (BRIEF lever 6). |
 
 ## 4. `data/processed/forecast.parquet` (A writes, Part 2)
 
