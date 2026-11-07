@@ -182,7 +182,10 @@ def plan_day(
 def simulate(scenario: dict) -> dict  # scenario/results exactly as POST /api/scenario below
 ```
 
-Fixed day length of 48 is assumed; clock-change days are handled by the caller padding/trimming.
+Fixed day length of 48 is assumed; clock-change days are handled by the caller padding/trimming. `dispatch/live.py` passes the **remaining** half hours of
+today instead (shape `(n,)`, n ≤ 48); both planners accept any length, including 0. `dispatch.optimiser.plan_day`
+(the LP) has the same signature and return shape as `dispatch.rule_based.plan_day`; both may return a `discharge`
+with `power_mw > 0` where the planned SoC is 0 (sale intent), so callers cap by actual SoC.
 
 ## 7. HTTP API (B writes `app/server.py`)
 
