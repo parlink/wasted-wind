@@ -279,6 +279,26 @@ function drawBoundaryLabels() {
   }
 }
 
+// ---------- turbines: each farm is a turbine on its circle; on Reveal the blades turn at the share of
+// output the farm was allowed to make, so a farm that was mostly switched off barely moves ----------
+const TURBINE_SVG = '<svg viewBox="0 0 24 34" aria-hidden="true"><path class="tower" d="M11.2 10 L12.8 10 L13.6 33 L10.4 33 Z"/><g class="blades"><path d="M12 10 C11.2 6.5 11.4 3 12 0.6 C12.6 3 12.8 6.5 12 10 Z"/><path d="M12 10 C11.2 6.5 11.4 3 12 0.6 C12.6 3 12.8 6.5 12 10 Z" transform="rotate(120 12 10)"/><path d="M12 10 C11.2 6.5 11.4 3 12 0.6 C12.6 3 12.8 6.5 12 10 Z" transform="rotate(240 12 10)"/></g><circle class="hub" cx="12" cy="10" r="1.6"/></svg>';
+const turbineMarkers = new Map();
+function drawTurbines(byFarm, reveal) {
+  for (const f of state.farms) {
+    let m = turbineMarkers.get(f.farm_id);
+    if (!m) {
+      const node = el("div", { class: "turbine" });
+      node.innerHTML = TURBINE_SVG;
+      m = new maplibregl.Marker({ element: node, anchor: "bottom", offset: [0, 2] }).setLngLat([f.lon, f.lat]).addTo(map);
+      turbineMarkers.set(f.farm_id, m);
+    }
+    const node = m.getElement();
+    const running = reveal ? 1 - Math.min(1, Math.max(0, (byFarm[f.farm_id] || {}).share || 0)) : 0.6;
+    node.classList.toggle("still", running < 0.05);
+    node.style.setProperty("--spin", `${(1.4 / Math.max(running, 0.05)).toFixed(2)}s`);   // full output: one turn in 1.4 s
+  }
+}
+
 function updateMap() {
   if (!map || !map.getSource("farms")) return;
   map.getSource("boundaries").setData(boundaryGeoJSON());
@@ -308,6 +328,7 @@ function updateMap() {
       properties: { farm_id: f.farm_id, name: f.farm_name, value: v.value || 0, share: v.share || 0, r, tip } };
   });
   features.sort((a, b) => b.properties.r - a.properties.r);   // small circles drawn on top
+  drawTurbines(byFarm, !predict && !simulate);
   map.getSource("farms").setData({ type: "FeatureCollection", features });
   map.setPaintProperty("farms", "circle-radius", ["get", "r"]);
   map.setPaintProperty("farms", "circle-color", predict || simulate ? C.waste
