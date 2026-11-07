@@ -827,8 +827,22 @@ let apInit = false;
 
 function apResults() {
   const sc = state.ap.scorecard;
-  const disp = sc.results.some((r) => r.dispatcher === "lp") ? "lp" : "rule";
-  return Object.fromEntries(sc.results.filter((r) => r.dispatcher === disp).map((r) => [r.strategy, r]));
+  // the rule dispatcher for each strategy; "perfect" uses the optimiser's true ceiling once it exists
+  const out = Object.fromEntries(sc.results.filter((r) => r.dispatcher === "rule").map((r) => [r.strategy, r]));
+  const lp = sc.results.find((r) => r.strategy === "perfect" && r.dispatcher === "lp");
+  if (lp) out.perfect = lp;
+  return out;
+}
+
+function holdoutText(sc) {
+  const h = sc.holdout && sc.holdout.capture_ratio;
+  if (!h || h["forecast/rule"] == null || h["reactive/rule"] == null) return "";
+  return `On months the dispatcher was never tuned on (${sc.holdout.months.join(", ")}): ` +
+    `${fmtPct(h["forecast/rule"])} vs ${fmtPct(h["reactive/rule"])}.`;
+}
+
+function apLpCeiling() {
+  return state.ap.scorecard.results.some((r) => r.strategy === "perfect" && r.dispatcher === "lp");
 }
 
 function renderScorecard() {
@@ -837,7 +851,10 @@ function renderScorecard() {
   $("ap-headline").textContent = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
   const period = sc.period ? `${dayFmt.format(new Date(sc.period.start))} – ${dayFmt.format(new Date(new Date(sc.period.end) - 1))}` : "";
   $("ap-headline-sub").textContent = `Share of the hindsight battery's revenue earned with our forecast vs with no forecast, ` +
-    `${sc.batteries.length} batteries, ${period}. "Hindsight" = the same rules given perfect knowledge of the day.`;
+    `${sc.batteries.length} batteries, ${period}. ` +
+    (apLpCeiling() ? `"Hindsight" = the best any schedule could have done, knowing exactly what happened.`
+      : `"Hindsight" = the same rules given perfect knowledge of the day.`) +
+    (holdoutText(sc) ? ` ${holdoutText(sc)}` : "");
   const order = ["perfect", "forecast", "reactive", "do_nothing"].filter((k) => res[k]);
   hbars($("ap-ratio-bars"), order.map((k) => ({ id: k, label: STRATEGY_NAMES[k], value: res[k].capture_ratio,
     color: k === "forecast" ? C.planned : C.neutral })), { fmt: fmtPct });

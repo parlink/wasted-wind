@@ -16,7 +16,8 @@ simulator consistent: it only simulates those farms.
 NESO's day-ahead "flow" is the unconstrained forecast (it is above the limit ~45% of the time on
 B4), so it is used only when nothing was curtailed, and capped at the limit. Missing or zero
 limits are filled (short gaps carried forward, then NESO's weekly limits, then interpolation)
-and those rows are marked `fallback`.
+and those rows are marked `fallback`. The weekly file's B4 value is "Min of B4 B5", a weekly
+*minimum*, so fallback limits err low.
 
     python -m pipeline.residual
 """
@@ -58,6 +59,14 @@ def parse_neso(raw: pd.DataFrame) -> pd.DataFrame:
     df = raw.rename(columns={"Constraint Group": "group", "Date_ Time GMT_BST": "local",
                              "Limit_MW": "limit_mw", "Flow_MW": "flow_mw"})
     local = pd.to_datetime(df["local"], format="ISO8601")
+    # Rows per (group, local time): 2 legitimately on the autumn clock change (BST then GMT),
+    # 1 otherwise. Extra rows are republications and are dropped. Rows are never compared by
+    # value: the genuine BST and GMT rows are often identical (flat limits, repeated flows).
+    ambiguous = pd.DatetimeIndex(local).tz_localize(
+        "Europe/London", ambiguous="NaT", nonexistent="shift_forward").isna()
+    n = df.assign(local=local).groupby(["group", "local"]).cumcount().to_numpy()
+    keep = n < np.where(ambiguous, 2, 1)
+    df, local = df[keep].reset_index(drop=True), local[keep].reset_index(drop=True)
     first = df.assign(local=local).groupby(["group", "local"]).cumcount().to_numpy() == 0
     utc = (pd.DatetimeIndex(local).tz_localize("Europe/London", ambiguous=first,
                                                 nonexistent="shift_forward").tz_convert("UTC"))
