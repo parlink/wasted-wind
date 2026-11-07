@@ -121,9 +121,6 @@ Also present (added in #5/#14, extra keys are allowed): `ablations` (e.g. `light
 same metric keys as `models`), `interval` (`coverage_p10_p90`, `coverage_on_waste_hours`, …) and
 `notes` (list of strings). `shap_top_signals` is mean |SHAP| on each fold's held-out month.
 
-```
-```
-
 ## 5. `data/processed/schedules.parquet` (A writes, Part 3)
 
 One row per `battery_id` per `strategy` per `period_start` (per plan issue in live mode).
