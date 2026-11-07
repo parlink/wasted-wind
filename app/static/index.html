@@ -71,7 +71,8 @@
     </div>
 
     <div class="block">
-      <h3>Which cable was full <span class="tag-est" title="Public data doesn't say which cable each switch-off was for, so this split is our best estimate">approximate</span></h3>
+      <h3>Which pinch point was full <span class="tag-est" title="Public data doesn't say which pinch point each switch-off was for, so this split is our best estimate">approximate</span></h3>
+      <p class="note">Power from Scottish wind has to travel south on the grid. The power lines have two pinch points that can only carry so much: <b>B4</b>, between northern and southern Scotland, and <b>B6</b>, the border with England (dashed red lines on the map). When one is full, farms north of it are paid to switch off.</p>
       <div id="boundary-bar" class="segbar" role="img"></div>
       <div id="boundary-legend" class="legend"></div>
       <p id="binding-note" class="note"></p>
@@ -162,9 +163,10 @@
 
     <!-- levers, grouped as in the brief -->
     <fieldset class="lever-group">
-      <legend>Cables</legend>
+      <legend>Grid pinch points</legend>
+      <p class="note">Power from Scottish wind has to travel south on the grid. The power lines have two pinch points that can only carry so much: <b>B4</b>, between northern and southern Scotland, and <b>B6</b>, the border with England (dashed red lines on the map). When one is full, farms north of it are paid to switch off. Make one bigger to see where the waste goes.</p>
       <div class="lever" data-boundary="b4">
-        <label>B4 · the bottleneck inside Scotland (north → south)</label>
+        <label>B4 · between northern and southern Scotland</label>
         <div class="seg" role="group" aria-label="B4 setting">
           <button type="button" data-mode="historical" aria-pressed="true">As it was</button>
           <button type="button" data-mode="offset" aria-pressed="false">Bigger / smaller by</button>
@@ -173,7 +175,7 @@
         <div class="lever-row"><input type="range" aria-label="B4 MW" disabled><output></output></div>
       </div>
       <div class="lever" data-boundary="b6">
-        <label>B6 · the Scotland → England border</label>
+        <label>B6 · the Scotland–England border</label>
         <div class="seg" role="group" aria-label="B6 setting">
           <button type="button" data-mode="historical" aria-pressed="true">As it was</button>
           <button type="button" data-mode="offset" aria-pressed="false">Bigger / smaller by</button>
@@ -187,7 +189,7 @@
       <legend>Batteries</legend>
       <div class="lever">
         <button type="button" id="place-battery" class="btn-secondary" aria-pressed="false">Place a battery on the map</button>
-        <p class="note" id="place-hint">Click anywhere in Scotland. A battery north of B4 can store wind wasted at either bottleneck; one further south only at B6.</p>
+        <p class="note" id="place-hint">Click anywhere in Scotland. A battery north of B4 can store wind wasted at either pinch point; one between B4 and B6 only at B6.</p>
         <div id="battery-list"></div>
       </div>
       <div class="lever">
@@ -289,9 +291,10 @@
         <li><b>Method A (market):</b> each farm tells the grid what it plans to generate (its Physical Notification).
           When the grid operator pays it to turn down, that is a bid acceptance. Switched off = planned minus what the
           accepted instructions allowed, half hour by half hour.</li>
-        <li><b>Method B (physics):</b> wind speed at the hub, run through the turbine power curve, minus what the farm
-          actually metered. It never looks at the market, so where A and B agree, the waste is real.</li>
-        <li>Costs: <b>paid to switch off</b> = waste &times; the farm's accepted bid price. <b>Replacement gas</b> =
+        <li><b>Method B (physics):</b> wind speed at hub height through each farm's own power curve, learned from
+          half hours when nobody was turned down, minus what it actually metered. It never uses the turn-down volumes,
+          so where A and B agree, the waste is real.</li>
+        <li>Costs: <b>paid to switch off</b> = waste &times; the farm's bid price for that half hour. <b>Replacement gas</b> =
           waste &times; (gas price &divide; 2.93 &divide; 50% efficiency + carbon price &times; 0.37 t/MWh).</li>
       </ul>
     </div>
@@ -338,9 +341,10 @@
     <div class="block">
       <h3>Data sources</h3>
       <ul class="method-list">
-        <li><b>Elexon BMRS:</b> planned output (PN), bid acceptances (BOALF), metered output, bid prices.</li>
-        <li><b>NESO:</b> boundary limits and flows for B4 and B6, demand.</li>
-        <li><b>Open-Meteo:</b> historical and forecast wind speed at each farm.</li>
+        <li><b>Elexon BMRS:</b> planned output (PN), turn-down instructions (BOALF), metered output, bid prices,
+          demand outturn and the day-ahead national demand forecast.</li>
+        <li><b>NESO:</b> limits and flows for the B4 and B6 pinch points.</li>
+        <li><b>Open-Meteo:</b> historical wind, archived day-ahead forecasts ("previous runs") and the live forecast at each farm.</li>
       </ul>
     </div>
   </section>

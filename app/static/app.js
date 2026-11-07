@@ -226,8 +226,9 @@ function drawBoundaryLabels() {
   const share = {};
   for (const b of (state.boundaries && state.boundaries.boundaries) || []) share[b.boundary] = b.share_periods_binding;
   for (const [name, coords] of Object.entries(BOUNDARIES)) {
-    const text = share[name] == null ? `${name} · approximate · awaiting boundary data`
-      : `${name} · full ${fmtPct(share[name])} of the time · approximate`;
+    const where = name === "B4" ? "pinch point inside Scotland" : "Scotland–England border";
+    const text = share[name] == null ? `${name} · ${where} · approximate line`
+      : `${name} · ${where} · full ${fmtPct(share[name])} of the time`;
     const label = el("div", { class: "boundary-label" }, text);
     // label at the line's eastern end, out at sea, so it doesn't cover cities
     boundaryMarkers.push(new maplibregl.Marker({ element: label, anchor: "left", offset: [6, 0] })
@@ -337,7 +338,7 @@ function renderReveal() {
     return;
   }
   const b4 = t.by_boundary_twh.B4 || 0, b6 = t.by_boundary_twh.B6 || 0, tot = b4 + b6;
-  const parts = [["B4", "inside Scotland", b4, C.planned], ["B6", "Scotland–England border", b6, C.waste]];
+  const parts = [["B4", "northern → southern Scotland", b4, C.planned], ["B6", "Scotland → England", b6, C.waste]];
   bar.setAttribute("aria-label", parts.map(([n, , v]) => `${n} ${fmtPct(tot ? v / tot : 0)}`).join(", "));
   for (const [name, desc, v, color] of parts) {
     if (!tot || v <= 0) continue;
@@ -348,7 +349,7 @@ function renderReveal() {
   legend($("boundary-legend"), parts.map(([n, d, v, c]) => ({ label: `${n} ${d} · ${fmtEnergy(v * 1e6)}`, color: c })));
   const sh = Object.fromEntries((state.boundaries.boundaries || []).map((b) => [b.boundary, b.share_periods_binding]));
   $("binding-note").textContent = `B4 was full ${fmtPct(sh.B4)} of the time, B6 ${fmtPct(sh.B6)}. ` +
-    "Waste in the far north while B4 was full is counted as B4; the rest as B6.";
+    "Waste north of B4 while B4 was full is counted as B4; the rest as B6.";
 
   hbars($("farm-bars"), state.reveal.farms.map((f) => ({ id: f.farm_id, label: farmName(f.farm_id), value: f.curtailed_mwh })),
     { color: C.waste, selected: state.farm, onClick: selectFarm, fmt: fmtEnergy });
