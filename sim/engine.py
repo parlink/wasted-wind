@@ -270,6 +270,16 @@ def planning_signals(inp: Inputs, q: str, waste_n: np.ndarray, waste_s: np.ndarr
     return sig_n, np.nan_to_num(fc_s), int((np.isnan(fc_n) & np.isnan(fc_s)).sum()), int(np.isnan(fc_s).sum())
 
 
+def _north_room(ex4, ex6, flow4, lk_n):
+    """MW of would-be waste a North battery can remove. Charging cuts the North surplus: first the B4 overflow,
+    then the flow over B4 (which is what relieves B6). With a North subsea link, charging past that point only
+    takes power off the link, which removes no waste, so B6 relief is capped at the B4 flow. Without a link the
+    cut can continue into southbound-to-northbound flow, as before."""
+    if not np.any(np.asarray(lk_n) > 0):
+        return ex4 + ex6
+    return ex4 + np.minimum(ex6, np.maximum(flow4, 0.0))
+
+
 def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0, phys=None):
     """Plan each battery a day ahead with the dispatcher, then execute half hour by half hour.
 
@@ -280,7 +290,8 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
     """
     T, days = len(pot_n), len(pot_n) // 48
     bats = sc["batteries"]
-    waste_n = (ex4_0 + ex6_0) * H           # MWh a North battery could absorb
+    lk_n0 = (phys or {}).get("lk_n", 0.0)
+    waste_n = _north_room(ex4_0, ex6_0, flow4_0, lk_n0) * H   # MWh a North battery could absorb
     waste_s = ex6_0 * H                     # only B6 waste for a South battery
     head_n = np.maximum(0.0, np.minimum(l4 - flow4_0, l6 - flow6_0))
     head_s = np.maximum(0.0, l6 - flow6_0)
@@ -309,7 +320,7 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
             j = i - d * 48
             # charging from would-be waste: North batteries first (B4 and B6 waste), then South
             s_n = pot_n[i] + res_n[i]
-            room_n = ex4_0[i] + ex6_0[i]
+            room_n = _north_room(ex4_0[i], ex6_0[i], flow4_0[i], lk_n)
             cn = 0.0
             for b, p, dp in zip(bats, plans, day_plans):
                 if p["north"] and dp["action"][j] != "discharge":
@@ -395,9 +406,13 @@ def _payments(inp: Inputs, cut_mwh: np.ndarray, m: np.ndarray, sop: dict | None)
     """Lever 11: switch-off payments at the farms' bid prices, scaled, or at one flat price for all."""
     sop = sop or {}
     value = sop.get("value")
+    if value is None:                       # unset in either mode: the farms' own bids
+        return float((cut_mwh * -inp.bid_gbp_mwh[m]).sum())
+    if float(value) < 0:
+        raise ValueError("switch_off_price.value must be >= 0 (a multiplier, or £ per MWh paid to the farm)")
     if sop.get("mode") == "flat":
-        return float(cut_mwh.sum()) * float(value or 0.0)
-    return float((cut_mwh * -inp.bid_gbp_mwh[m]).sum()) * float(1.0 if value is None else value)
+        return float(cut_mwh.sum()) * float(value)
+    return float((cut_mwh * -inp.bid_gbp_mwh[m]).sum()) * float(value)
 
 
 def _totals(inp: Inputs, r: dict, m: np.ndarray, sc: dict | None = None) -> dict:
@@ -454,7 +469,7 @@ def simulate(scenario: dict) -> dict:
     base = _baseline(inp)
     res = base if _is_baseline(sc) else run_core(inp, sc)
 
-    s_tot, b_tot = _totals(inp, res, m, sc), _totals(inp, base, m)
+    s_tot, b_tot = _totals(inp, res, m, sc), _totals(inp, base, m, sc)   # same prices: deltas are physical only
     delta = {k: ({kk: round(v[kk] - b_tot[k][kk], 9) for kk in v} if isinstance(v, dict) else round(v - b_tot[k], 9))
              for k, v in s_tot.items()}
     sf, bf = _farm_mwh(inp, res, m), _farm_mwh(inp, base, m)

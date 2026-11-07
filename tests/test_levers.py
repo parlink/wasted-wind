@@ -101,7 +101,9 @@ def test_gas_and_carbon_prices_change_only_the_money(base):
     assert wasted(r) == wasted(base)
     mwh = wasted(base) * 1e6
     assert r["scenario"]["replacement_gas_gbp"] == pytest.approx(mwh * contract.replacement_gbp_mwh(160.0, 100.0), rel=1e-6)
-    assert r["delta"]["replacement_gas_gbp"] > 0
+    # the baseline is priced the same way, so a price-only change shows no physical delta (#43 review)
+    assert r["baseline"]["replacement_gas_gbp"] == pytest.approx(r["scenario"]["replacement_gas_gbp"], rel=1e-9)
+    assert r["delta"]["replacement_gas_gbp"] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_carbon_intensity_scales_co2(base):
@@ -135,3 +137,47 @@ def test_odd_inputs_fail_loudly_or_read_as_unset(base):
                   "switch_off_price": {"mode": "multiplier", "value": None}})
     assert r["delta"]["curtailed_twh"] == pytest.approx(0.0, abs=1e-12)
     assert r["scenario"]["payments_gbp"] == pytest.approx(base["scenario"]["payments_gbp"])
+
+
+def test_negative_switch_off_price_is_rejected():
+    with pytest.raises(ValueError):
+        simulate({"switch_off_price": {"mode": "flat", "value": -50.0}})
+
+
+def test_north_link_matches_an_equal_b4_upgrade_on_b4():
+    """Same maths on B4: a north link of X MW takes X off the surplus before B4, like X more MW of B4."""
+    link = simulate({"subsea_link": {"zone": "north_scotland", "gw": 2.0, "availability": 0.95}})
+    b4 = simulate({"b4": {"mode": "offset", "mw": 1900.0}})
+    assert link["scenario"]["by_boundary_twh"]["B4"] == pytest.approx(b4["scenario"]["by_boundary_twh"]["B4"], abs=1e-9)
+    # but the link also skips B6, so it can only do better there
+    assert link["scenario"]["by_boundary_twh"]["B6"] <= b4["scenario"]["by_boundary_twh"]["B6"] + 1e-9
+
+
+BATTERY_N = {"battery_id": "bn", "lat": 57.5, "lon": -4.2, "zone": "north_scotland",
+             "power_mw": 300, "energy_mwh": 600, "efficiency": 0.88, "dispatcher": "rule"}
+
+
+@pytest.mark.parametrize("extra", [
+    {"subsea_link": {"zone": "north_scotland", "gw": 0.5, "availability": 1.0}},
+    {"subsea_link": {"zone": "north_scotland", "gw": 3.0, "availability": 1.0}},
+    {"demand_growth": {"north_scotland": {"data_centres_gw": 0.5}}},
+    # the case from the #43 review: north power all fits down the link while the south has B6 waste.
+    # The old room (ex4 + ex6) let the battery 'capture' link flow: 2,727 MWh captured vs 2,467 removed.
+    {"subsea_link": {"zone": "north_scotland", "gw": 3.0, "availability": 1.0}, "b6": {"mode": "fixed", "mw": 50.0}},
+])
+def test_battery_capture_equals_waste_removed_with_new_levers(extra):
+    """No free energy: every MWh a battery 'captures' is a MWh less wasted (#43 review, blocker 1)."""
+    without = simulate(extra)
+    with_batt = simulate({**extra, "batteries": [BATTERY_N]})
+    removed = (without["scenario"]["curtailed_twh"] - with_batt["scenario"]["curtailed_twh"]) * 1e6
+    captured = with_batt["batteries"][0]["captured_curtailment_mwh"]
+    assert removed == pytest.approx(captured, rel=1e-6, abs=1e-3)
+    if extra.get("subsea_link", {}).get("gw") == 0.5:
+        assert captured > 0   # a small link leaves waste to catch, so the check above is not trivially 0 = 0
+
+
+def test_north_room_caps_b6_relief_at_the_b4_flow_when_there_is_a_link():
+    from sim.engine import _north_room
+    assert _north_room(0.0, 500.0, 0.0, 1000.0) == 0.0        # everything goes down the link: nothing to relieve
+    assert _north_room(100.0, 500.0, 200.0, 1000.0) == 300.0  # B4 overflow + only the flow that crosses B4
+    assert _north_room(100.0, 500.0, 0.0, 0.0) == 600.0       # no link: unchanged from before
