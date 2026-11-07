@@ -1,4 +1,4 @@
-"""Live re-planning (#13): every 30 minutes, re-solve the rest of today from the current SoC.
+"""Live re-planning (#13): every 30 minutes, re-solve the next 24 h from the current SoC.
 
     python -m dispatch.live              # one re-plan
     python -m dispatch.live --every 30   # judging day
@@ -51,6 +51,7 @@ EXECUTED = sc.PROCESSED / "live_executed.parquet"   # what the live battery actu
 HORIZON = 48                 # re-plan the next 24 h (rolling), so slots after midnight have a plan
 MAX_CATCHUP = pd.Timedelta(days=2)   # after a longer outage, don't back-fill further than this
 MIN_PRICE_SLOTS = 40         # of 48 half hours of the day, needed for an expected-price curve
+MIN_OBS_PER_SLOT = 3         # ... each seen on at least this many of the last 7 days
 NOWCAST_PERIODS = 2          # the next hour expects at least the waste happening now
 
 
@@ -92,10 +93,34 @@ def advance_soc(battery: dict, plan: pd.DataFrame, waste, price, head, soc_start
     return advance(battery, plan, waste, price, head, soc_start)[0]
 
 
+def horizon_layout(now: pd.Timestamp, start: pd.Timestamp):
+    """Half-hour grid for one run: (periods, k, k_rest). periods[:k] are complete half hours since
+    `start`; periods[k] is the one in progress; periods[k_rest:] are the HORIZON re-planned ones,
+    starting at the next half-hour boundary."""
+    now_hh = now.floor("30min")
+    rest_from = now.ceil("30min") if now > now_hh else now_hh + pd.Timedelta(minutes=30)
+    periods = pd.date_range(start.floor("30min"), rest_from + pd.Timedelta(minutes=30) * HORIZON,
+                            freq="30min", inclusive="left")
+    return periods, int(periods.searchsorted(now_hh)), int(periods.searchsorted(rest_from))
+
+
+def fill_by_slot(known: pd.Series, periods: pd.DatetimeIndex) -> pd.Series:
+    """Values for `periods`: the published value where there is one, else the latest published
+    value for the same half hour of the day (like the forecast's limits), else the last value."""
+    out = known.reindex(periods)
+    k = known.dropna()
+    if out.isna().any() and len(k):
+        last_by_slot = k.groupby(k.index.strftime("%H:%M")).last()
+        fill = pd.Series(last_by_slot.reindex(periods.strftime("%H:%M")).to_numpy(), index=periods)
+        out = out.fillna(fill).fillna(k.iloc[-1])
+    return out
+
+
 def expected_price_by_slot(price: pd.Series) -> pd.Series:
     """Mean price for each of the 48 half hours of the day (index "HH:MM"). A missing slot takes the
     mean of the others; fewer than MIN_PRICE_SLOTS slots with data raises (treated as offline)."""
-    by = price.dropna().groupby(price.dropna().index.strftime("%H:%M")).mean()
+    g = price.dropna().groupby(price.dropna().index.strftime("%H:%M"))
+    by = g.mean()[g.size() >= MIN_OBS_PER_SLOT]          # a slot needs a few days, not one
     if len(by) < MIN_PRICE_SLOTS:
         raise RuntimeError(f"market prices for only {len(by)} of 48 half hours of the day")
     slots = pd.date_range("2000-01-01", periods=48, freq="30min").strftime("%H:%M")
@@ -123,7 +148,7 @@ def replan(batteries, inputs: dict, sched: pd.DataFrame, state: dict, now: pd.Ti
     """
     # Complete half hours since the last run are executed (across midnight too); the one in
     # progress finishes under the previous plan; re-planning starts at the next half-hour boundary
-    # (so plan_issued_at < period_start). After 23:30 there is nothing left today to re-plan.
+    # (so plan_issued_at < period_start). The plan length is len(inputs["fc_rest"]) (HORIZON live).
     now_hh = now.floor("30min")
     today = now.normalize()
     start = now.ceil("30min") if now > now_hh else now_hh + pd.Timedelta(minutes=30)
@@ -135,6 +160,9 @@ def replan(batteries, inputs: dict, sched: pd.DataFrame, state: dict, now: pd.Ti
         st = state.get(b["battery_id"], {})
         since = pd.Timestamp(st["as_of"]) if st.get("as_of") else today
         soc = float(st.get("soc_mwh", 0.0))
+        if since < x["start"]:
+            log.warning("%s: last run %s; half hours before %s are skipped (no executed rows) and the "
+                        "saved SoC %.0f MWh is assumed held", b["battery_id"], since, x["start"], soc)
         todo = elapsed[elapsed >= since]
         if len(todo):
             idx = elapsed.get_indexer(todo)
@@ -226,7 +254,7 @@ def gather_inputs(now: pd.Timestamp, since: pd.Timestamp | None = None) -> dict:
     # forecast for today from the newest weather run (saved models)
     models, base = lf.load_models()
     curt = pd.read_parquet(sc.PROCESSED / "curtailment.parquet", columns=lf.CURT_COLS)
-    fc = pd.concat([tr.live_rows(models, base, curt, now, day=d) for d in (today, today + pd.Timedelta(days=1))])
+    fc = tr.live_rows(models, base, curt, now, day=today, n_days=2)       # one fetch for today + tomorrow
     fc = fc.set_index(["farm_id", "hour_start"]).curtailed_mwh_pred
 
     # prices: fetched live for the last 8 days (no dependence on how old residual.parquet is);
@@ -240,17 +268,13 @@ def gather_inputs(now: pd.Timestamp, since: pd.Timestamp | None = None) -> dict:
     fetch.fetch_neso()
     neso = rs.boundary_series(rs.parse_neso(pd.read_csv(fetch.RAW_ROOT / "neso" / "day_ahead_constraints.csv",
                                                         encoding="utf-8-sig")))
-    rest_from = now.ceil("30min") if now > now_hh else now_hh + pd.Timedelta(minutes=30)
-    periods = pd.date_range(start, rest_from + pd.Timedelta(minutes=30) * HORIZON, freq="30min", inclusive="left")
-    nb = neso.reindex(periods).ffill().bfill()
-    room4 = nb.b4_limit_mw - nb.b4_flow_mw.clip(upper=nb.b4_limit_mw)
-    room6 = nb.b6_limit_mw - nb.b6_flow_mw.clip(upper=nb.b6_limit_mw)
-    room = {"north_scotland": np.minimum(room4, room6).clip(lower=0).to_numpy(),
-            "south_scotland": room6.clip(lower=0).to_numpy()}
-
-    elapsed = periods[periods < now_hh]
-    k = len(elapsed)
-    k_rest = int(periods.searchsorted(rest_from))
+    periods, k, k_rest = horizon_layout(now, start)
+    room4 = neso.b4_limit_mw - neso.b4_flow_mw.clip(upper=neso.b4_limit_mw)
+    room6 = neso.b6_limit_mw - neso.b6_flow_mw.clip(upper=neso.b6_limit_mw)
+    # where NESO hasn't published yet (tomorrow), use the same half hour's latest value
+    room = {"north_scotland": fill_by_slot(np.minimum(room4, room6).clip(lower=0), periods).to_numpy(),
+            "south_scotland": fill_by_slot(room6.clip(lower=0), periods).to_numpy()}
+    elapsed = periods[:k]
     out = {}
     for b in sc.BATTERIES:
         bmus = farms.loc[farms.farm_id == b["farm_id"], "bmu_id"].tolist()

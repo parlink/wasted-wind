@@ -196,7 +196,7 @@ def run_fold(panel: pd.DataFrame, month: pd.Timestamp):
 OPENMETEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 
 
-def live_inputs(now: pd.Timestamp, day: pd.Timestamp | None = None):
+def live_inputs(now: pd.Timestamp, day: pd.Timestamp | None = None, n_days: int = 1):
     """Weather, limits and demand for `day` (default tomorrow, UTC), as known right now.
     Needs the network."""
     from pipeline import fetch, residual as rs
@@ -206,7 +206,8 @@ def live_inputs(now: pd.Timestamp, day: pd.Timestamp | None = None):
     for f in farms.itertuples():
         resp = fetch.get_json(OPENMETEO_FORECAST, {
             "latitude": f.lat, "longitude": f.lon, "hourly": "wind_speed_100m", "wind_speed_unit": "ms",
-            "timezone": "GMT", "start_date": f"{day:%Y-%m-%d}", "end_date": f"{day:%Y-%m-%d}"})
+            "timezone": "GMT", "start_date": f"{day:%Y-%m-%d}",
+            "end_date": f"{day + pd.Timedelta(days=n_days - 1):%Y-%m-%d}"})
         w = fetch.openmeteo_to_frame(resp, f.farm_id).rename(
             columns={"time": "hour_start", "wind_speed_100m": "wind_fc_ms"})
         rows.append(w.assign(zone=f.zone))
@@ -215,7 +216,7 @@ def live_inputs(now: pd.Timestamp, day: pd.Timestamp | None = None):
     fetch.fetch_neso(refresh=True)
     neso = rs.boundary_series(rs.parse_neso(pd.read_csv(
         fetch.RAW_ROOT / "neso" / "day_ahead_constraints.csv", encoding="utf-8-sig")))
-    lim = _live_limits(neso, day)
+    lim = _live_limits(neso, day, n_days)
 
     ndf = fetch.records_to_frame(fetch.get_json(f"{fetch.BASE}/datasets/NDF/stream", {
         "publishDateTimeFrom": f"{now - pd.Timedelta(hours=6):%Y-%m-%dT%H:%MZ}",
@@ -223,12 +224,12 @@ def live_inputs(now: pd.Timestamp, day: pd.Timestamp | None = None):
     return weather, lim, ft.hourly_demand(ndf[["publishTime", "startTime", "demand"]], issued_at=now)
 
 
-def _live_limits(neso_wide: pd.DataFrame, day: pd.Timestamp) -> pd.DataFrame:
+def _live_limits(neso_wide: pd.DataFrame, day: pd.Timestamp, n_days: int = 1) -> pd.DataFrame:
     """Hourly limits up to the end of `day`: NESO's published values (forward-fill only); hours
     not yet published take the latest known value for the same hour of day."""
     lim = ft.neso_limits_hourly(neso_wide)
-    lim = lim[lim.index < day + pd.Timedelta(days=1)]
-    hours = pd.date_range(day, periods=24, freq="h")
+    lim = lim[lim.index < day + pd.Timedelta(days=n_days)]
+    hours = pd.date_range(day, periods=24 * n_days, freq="h")
     have = lim.reindex(hours)
     if have.isna().any().any():
         known = lim.dropna()
@@ -240,10 +241,10 @@ def _live_limits(neso_wide: pd.DataFrame, day: pd.Timestamp) -> pd.DataFrame:
 
 
 def live_rows(models: dict, baselines: dict, curt: pd.DataFrame, now: pd.Timestamp,
-              day: pd.Timestamp | None = None) -> pd.DataFrame:
+              day: pd.Timestamp | None = None, n_days: int = 1) -> pd.DataFrame:
     """Forecast rows for `day` (default tomorrow) issued now. dispatch.live uses day = today."""
     day = (now + pd.Timedelta(days=1)).normalize() if day is None else day.normalize()
-    weather, lim, dem_h = live_inputs(now, day)
+    weather, lim, dem_h = live_inputs(now, day, n_days)
     farms = pd.read_csv(ft.ROOT / "reference" / "farms.csv")
     if curt.period_start.max() < day - pd.Timedelta(hours=25):     # lag48 needs D-2 complete
         log.warning("live: Part 1 data ends %s; lag48 / persistence and trailing signals for %s "

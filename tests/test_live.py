@@ -218,3 +218,44 @@ def test_expected_price_by_half_hour_fills_gaps_and_refuses_thin_history():
     assert len(filled) == 48 and np.isfinite(filled["03:00"])
     with pytest.raises(RuntimeError):
         live.expected_price_by_slot(price[price.index.strftime("%H:%M") < "10:00"])   # only 20 slots
+
+
+# ---------- quant review of #46 ----------
+
+def test_horizon_layout_gives_48_rest_slots_from_the_next_boundary():
+    for now in (pd.Timestamp("2026-11-08T10:15Z"), pd.Timestamp("2026-11-08T10:30Z"), pd.Timestamp("2026-11-08T23:50Z")):
+        start = now.normalize()
+        periods, k, k_rest = live.horizon_layout(now, start)
+        assert len(periods) - k_rest == live.HORIZON
+        assert periods[k_rest] > now and periods[k_rest] - now <= pd.Timedelta(minutes=30)
+        assert periods[k] == now.floor("30min") and (periods[:k] < now.floor("30min")).all()
+
+
+def test_unpublished_headroom_uses_the_same_half_hour_not_the_last_one():
+    # Quant review: carrying 23:30 forward for 24 h would make a tight night look tight all day.
+    idx = pd.date_range("2026-11-07T00:00Z", periods=48, freq="30min")
+    room = pd.Series(np.where(idx.hour < 12, 100.0, 900.0), index=idx)
+    room.iloc[-1] = 0.0                                        # 23:30 tight
+    tomorrow = pd.date_range("2026-11-08T00:00Z", periods=48, freq="30min")
+    filled = live.fill_by_slot(room, tomorrow)
+    assert filled.iloc[0] == 100.0 and filled.iloc[30] == 900.0 and filled.iloc[-1] == 0.0
+
+
+def test_price_slots_need_three_observations_each():
+    idx = pd.date_range("2026-11-07T00:00Z", periods=48, freq="30min")          # one day only
+    with pytest.raises(RuntimeError):
+        live.expected_price_by_slot(pd.Series(50.0, index=idx))
+
+
+def test_catch_up_cap_runs_end_to_end(tmp_path):
+    # The 2-day path for real: state from a week ago, inputs starting at the cap.
+    now = pd.Timestamp("2026-11-08T10:15Z")
+    start = now - live.MAX_CATCHUP
+    k = int((now.floor("30min") - start.floor("30min")) / pd.Timedelta(minutes=30))
+    x = {BAT["battery_id"]: {"start": start.floor("30min"), "waste_so_far": np.zeros(k), "price_so_far": np.full(k, 50.0),
+                             "head_so_far": np.full(k, 300.0), "fc_rest": np.zeros(48),
+                             "price_rest": np.full(48, 50.0), "head_rest": np.full(48, 300.0)}}
+    state = {BAT["battery_id"]: {"soc_mwh": 10.0, "as_of": "2026-11-01T00:00:00Z"}}
+    rows, new, executed = live.replan([BAT], x, pd.DataFrame(columns=sc.COLUMNS), state, now)
+    assert len(executed) == k and executed.period_start.min() == start.floor("30min")
+    assert new[BAT["battery_id"]]["as_of"] == "2026-11-08T10:00:00Z" and len(rows) == 48
