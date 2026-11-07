@@ -15,7 +15,7 @@ const BOUNDARIES = {
 };
 
 const state = {
-  tab: "reveal", farm: null, mode: "all", idx: 0, periods: [], anchor: null, days: [], playTimer: null,
+  tab: "reveal", farm: null, mode: "all", range: null, days: [], playTimer: null,
   farms: [], reveal: null, boundaries: null, tomorrow: null, metrics: null,
 };
 const charts = {};
@@ -80,42 +80,55 @@ const farmName = (id) => (state.farms.find((f) => f.farm_id === id) || {}).farm_
 const monthFmt = new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
 const DAY_MS = 86400000;
 
-// Reveal's time windows: every period of the chosen length within the data, as [start, end) UTC days
-function buildPeriods(mode) {
-  if (!state.days.length || mode === "all") return [];
-  const first = state.days[0], end = new Date(state.days[state.days.length - 1].getTime() + DAY_MS);
-  const out = [];
-  if (mode === "day" || mode === "week") {
-    const step = mode === "day" ? 1 : 7;
-    for (let d = first; d < end; d = new Date(d.getTime() + step * DAY_MS)) {
-      const e = new Date(Math.min(d.getTime() + step * DAY_MS, end.getTime()));
-      out.push({ start: d, end: e, label: mode === "day" ? dayFmt.format(d)
-        : `${dayFmt.format(d)} – ${dayFmt.format(new Date(e.getTime() - DAY_MS))}` });
-    }
-  } else {
-    let d = new Date(Date.UTC(first.getUTCFullYear(), mode === "year" ? 0 : first.getUTCMonth(), 1));
-    while (d < end) {
-      const next = mode === "year" ? new Date(Date.UTC(d.getUTCFullYear() + 1, 0, 1))
-        : new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
-      const s = d < first ? first : d, e = next > end ? end : next;
-      const partial = s > d || e < next;
-      const label = mode === "year" ? String(d.getUTCFullYear()) : monthFmt.format(d);
-      out.push({ start: s, end: e, label: partial ? `${label} (${dayFmt.format(s)} – ${dayFmt.format(new Date(e.getTime() - DAY_MS))})` : label });
-      d = next;
-    }
-  }
-  return out;
+// Reveal's time window: null = everything, else [start, end) in whole UTC days.
+// The All/Year/Month/Week/Day buttons give a default range; the date boxes can set any range.
+function dataStart() { return state.days[0]; }
+function dataEnd() { return new Date(state.days[state.days.length - 1].getTime() + DAY_MS); }
+function clampRange(start, end) {
+  const s = new Date(Math.max(start.getTime(), dataStart().getTime()));
+  const e = new Date(Math.min(end.getTime(), dataEnd().getTime()));
+  return e > s ? { start: s, end: e } : null;
 }
-function currentPeriod() { return state.mode === "all" ? null : state.periods[state.idx]; }
+function defaultRange(mode, anchor) {
+  if (mode === "all" || !state.days.length) return null;
+  const a = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate()));
+  if (mode === "day") return clampRange(a, new Date(a.getTime() + DAY_MS));
+  if (mode === "week") {   // 7-day blocks from the first day of data (a Monday)
+    const k = Math.floor((a - dataStart()) / (7 * DAY_MS));
+    const s = new Date(dataStart().getTime() + k * 7 * DAY_MS);
+    return clampRange(s, new Date(s.getTime() + 7 * DAY_MS));
+  }
+  if (mode === "month") return clampRange(new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), 1)),
+    new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth() + 1, 1)));
+  return clampRange(new Date(Date.UTC(a.getUTCFullYear(), 0, 1)), new Date(Date.UTC(a.getUTCFullYear() + 1, 0, 1)));
+}
+function shiftedRange(dir) {   // the next/previous period of the same length
+  const r = state.range;
+  if (!r) return null;
+  if (state.mode === "month" || state.mode === "year") {
+    const a = new Date(r.start);
+    if (state.mode === "month") a.setUTCMonth(a.getUTCMonth() + dir, 1); else a.setUTCFullYear(a.getUTCFullYear() + dir, 0, 1);
+    return a >= dataEnd() ? null : defaultRange(state.mode, new Date(Math.max(a.getTime(), dataStart().getTime())));
+  }
+  const len = state.mode === "day" ? DAY_MS : state.mode === "week" ? 7 * DAY_MS : r.end - r.start;
+  const s = new Date(r.start.getTime() + dir * len);
+  if (s >= dataEnd() || new Date(s.getTime() + len) <= dataStart()) return null;
+  return clampRange(s, new Date(s.getTime() + len));
+}
 function windowParams() {
-  const p = currentPeriod();
-  return p ? `?start=${isoDay(p.start)}&end=${isoDay(p.end)}` : "";
+  const r = state.range;
+  return r ? `?start=${isoDay(r.start)}&end=${isoDay(r.end)}` : "";
 }
 function windowText() {
-  const p = currentPeriod();
-  if (p) return p.label;
   if (!state.days.length) return "";
-  return `${dayFmt.format(state.days[0])} – ${dayFmt.format(state.days[state.days.length - 1])}`;
+  const r = state.range || { start: dataStart(), end: dataEnd() };
+  const last = new Date(r.end.getTime() - DAY_MS);
+  const whole = (unit) => r.start.getUTCDate() === 1 && r.end.getUTCDate() === 1 &&
+    (unit === "month" ? r.start.getUTCMonth() !== r.end.getUTCMonth() || r.end - r.start < 32 * DAY_MS : r.start.getUTCMonth() === 0 && r.end.getUTCMonth() === 0);
+  if (r.end - r.start === DAY_MS) return dayFmt.format(r.start);
+  if (state.mode === "month" && whole("month") && r.end - r.start < 32 * DAY_MS) return monthFmt.format(r.start);
+  if (state.mode === "year" && whole("year")) return String(r.start.getUTCFullYear());
+  return `${dayFmt.format(r.start)} – ${dayFmt.format(last)}`;
 }
 
 function legend(node, items) {
@@ -210,7 +223,10 @@ async function initMap() {
     container: "map", style: await basemapStyle(), center: [-4.0, 57.2], zoom: 5.6,
     attributionControl: { compact: true },
   });
-  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
+  // the panel floats over the right of the map: keep Scotland centred in the visible part
+  const padMap = () => map.setPadding({ top: 0, bottom: 0, left: 0, right: window.innerWidth > 820 ? $("panel").offsetWidth + 24 : 0 });
+  padMap(); window.addEventListener("resize", padMap);
   await new Promise((res) => (map.loaded() ? res() : map.once("load", res)));
 
   map.addSource("boundaries", { type: "geojson", data: boundaryGeoJSON() });
@@ -341,7 +357,6 @@ async function loadReveal() {
 
 function renderReveal() {
   const t = state.reveal.totals;
-  $("window-label").textContent = windowText();
   $("hero-value").textContent = fmtEnergy(t.curtailed_twh * 1e6);
   // planned = what the farms told the grid they'd generate; switched off = the part the grid refused
   const planned = state.reveal.farms.reduce((s, f) => s + (f.potential_mwh || 0), 0);
@@ -505,22 +520,52 @@ function selectFarm(id) {
 
 // ---------- window controls ----------
 
+function syncDateInputs() {
+  const r = state.range || (state.days.length ? { start: dataStart(), end: dataEnd() } : null);
+  if (!r) return;
+  for (const id of ["range-start", "range-end"]) {
+    $(id).min = isoDay(dataStart()); $(id).max = isoDay(new Date(dataEnd().getTime() - DAY_MS));
+  }
+  $("range-start").value = isoDay(r.start);
+  $("range-end").value = isoDay(new Date(r.end.getTime() - DAY_MS));   // shown inclusive
+  document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode)));
+  const fixed = state.mode !== "all";
+  $("range-prev").disabled = !fixed || !shiftedRange(-1);
+  $("range-next").disabled = !fixed || !shiftedRange(1);
+  $("play").disabled = !fixed;
+}
 function setMode(mode) {
-  // keep looking at the same moment: the new period is the one containing the old one's start
-  const cur = currentPeriod();
-  if (cur) state.anchor = cur.start;
-  if (!state.anchor && state.days.length) state.anchor = state.days[state.days.length - 1];
+  // keep looking at the same moment: the new range is the one containing the old one's start
+  const anchor = state.range ? state.range.start : (state.days.length ? state.days[state.days.length - 1] : null);
+  const fromAll = !state.range;
   state.mode = mode;
-  state.periods = buildPeriods(mode);
-  const i = state.periods.findIndex((p) => state.anchor >= p.start && state.anchor < p.end);
-  state.idx = i >= 0 ? i : Math.max(0, state.periods.length - 1);
-  document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
-  const slider = $("day-slider");
-  slider.disabled = mode === "all";
-  slider.max = Math.max(0, state.periods.length - 1);
-  slider.value = state.idx;
-  $("play").disabled = mode === "all" || state.periods.length < 2;
+  state.range = anchor ? defaultRange(mode, anchor) : null;
+  // coming from "All", start on the latest *complete* week / month / year, not the few days of the current one
+  const full = { week: 7, month: 28, year: 365 }[mode];
+  if (fromAll && full && state.range && (state.range.end - state.range.start) / DAY_MS < full) {
+    state.range = shiftedRange(-1) || state.range;
+  }
+  syncDateInputs();
   loadReveal();
+}
+function setRangeFromInputs() {
+  const a = $("range-start").value, b = $("range-end").value;
+  if (!a || !b) return;
+  let s = new Date(`${a}T00:00:00Z`), e = new Date(`${b}T00:00:00Z`);
+  if (e < s) [s, e] = [e, s];
+  const r = clampRange(s, new Date(e.getTime() + DAY_MS));
+  if (!r) return;
+  state.range = r;
+  const len = r.end - r.start;
+  state.mode = len === DAY_MS ? "day" : "custom";   // a hand-picked range: ‹ › step by its own length
+  syncDateInputs();
+  loadReveal();
+}
+function stepRange(dir) {
+  const r = shiftedRange(dir);
+  if (!r) return false;
+  state.range = r; syncDateInputs(); loadReveal();
+  return true;
 }
 function stopPlay() {
   if (state.playTimer) clearInterval(state.playTimer);
@@ -529,13 +574,14 @@ function stopPlay() {
 }
 function togglePlay() {
   if (state.playTimer) return stopPlay();
-  if (state.mode === "all") setMode("day");
-  if (state.idx >= state.periods.length - 1) { state.idx = -1; }   // at the end: play from the start
+  if (state.mode === "all") return;
+  if (!shiftedRange(1)) {   // at the end: play from the start
+    state.range = defaultRange(state.mode === "custom" ? "day" : state.mode, dataStart());
+    if (state.mode === "custom") state.mode = "day";
+    syncDateInputs(); loadReveal();
+  }
   $("play").textContent = "❚❚"; $("play").setAttribute("aria-label", "Pause");
-  state.playTimer = setInterval(() => {
-    if (state.idx >= state.periods.length - 1) return stopPlay();
-    state.idx += 1; $("day-slider").value = state.idx; loadReveal();
-  }, 1400);
+  state.playTimer = setInterval(() => { if (!stepRange(1)) stopPlay(); }, 1400);
 }
 
 // ---------- Predict ----------
@@ -1249,36 +1295,21 @@ function setTab(tab) {
   else { if (tab === "method") loadMethod().catch(showError); updateMap(); }
 }
 
-function initIntro() {
-  const intro = $("intro");
-  const steps = [...intro.querySelectorAll(".intro-step")];
-  let i = 0;
-  const close = () => { intro.hidden = true; document.removeEventListener("keydown", onKey); if (map) map.resize(); };
-  const next = () => { if (i >= steps.length - 1) return close(); steps[i].hidden = true; i += 1; steps[i].hidden = false; };
-  const onKey = (e) => { if (e.key === "Escape") close(); else if (e.key === "Enter" || e.key === " " || e.key === "ArrowRight") { e.preventDefault(); next(); } };
-  document.addEventListener("keydown", onKey);
-  intro.addEventListener("click", (e) => (e.target.id === "enter-map" ? close() : next()));
-  if (new URLSearchParams(location.search).has("nointro")) close();
-}
-
 async function boot() {
-  initIntro();
   document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.addEventListener("click", () => { stopPlay(); setMode(b.dataset.mode); }));
   $("play").addEventListener("click", togglePlay);
-  $("day-slider").addEventListener("input", (e) => {
-    stopPlay(); state.idx = Number(e.target.value);
-    const p = currentPeriod(); if (p) state.anchor = p.start;
-    loadReveal();
-  });
+  $("range-start").addEventListener("change", () => { stopPlay(); setRangeFromInputs(); });
+  $("range-end").addEventListener("change", () => { stopPlay(); setRangeFromInputs(); });
+  $("range-prev").addEventListener("click", () => { stopPlay(); stepRange(-1); });
+  $("range-next").addEventListener("click", () => { stopPlay(); stepRange(1); });
   $("farm-clear").addEventListener("click", () => selectFarm(state.farm));
-  $("day-slider").disabled = true;
   try {
     const [health, farms] = await Promise.all([api("/api/health"), api("/api/farms")]);
     state.farms = farms.farms;
     const start = new Date(health.range.start), end = new Date(health.range.end);
     for (let d = new Date(start); d < end; d = new Date(d.getTime() + 86400000)) state.days.push(d);
-    $("play").disabled = true;
+    syncDateInputs();
     noteSource("wind farm waste", health.meta);
     $("source-tag").title = `Generated ${health.meta.generated_at}`;
     // The panel must never wait on map tiles (venue Wi-Fi): load both, draw the map when ready.

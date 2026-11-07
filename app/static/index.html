@@ -10,19 +10,6 @@
 </head>
 <body>
 
-<!-- Intro: two screens. Enter/click advances, Esc skips. -->
-<div id="intro" class="intro" role="dialog" aria-label="Introduction">
-  <div class="intro-step" data-step="0">
-    <p class="intro-big">In 2025 Britain switched off about <strong>10&nbsp;TWh</strong> of wind, almost all of it in Scotland.</p>
-    <p class="intro-hint">Enter to continue · Esc to skip</p>
-  </div>
-  <div class="intro-step" data-step="1" hidden>
-    <p class="intro-big">The yearly total is known. Where, when and why is not.</p>
-    <p class="intro-big intro-accent">We rebuilt it.</p>
-    <button type="button" id="enter-map" class="btn-primary">Enter map</button>
-  </div>
-</div>
-
 <div id="map" aria-label="Map of Scottish wind farms"></div>
 <div id="map-legend" class="map-legend"></div>
 <div id="map-tip" class="tip" hidden></div>
@@ -54,11 +41,14 @@
         <button type="button" data-mode="week" aria-pressed="false">Week</button>
         <button type="button" data-mode="day" aria-pressed="false">Day</button>
       </div>
-      <button type="button" id="play" class="icon-btn" aria-label="Play through">▶</button>
     </div>
-    <div class="filter-row">
-      <input type="range" id="day-slider" min="0" max="0" value="0" aria-label="Which period">
-      <span id="window-label" class="window-label"></span>
+    <div class="filter-row date-row">
+      <button type="button" id="range-prev" class="icon-btn" aria-label="Previous period">‹</button>
+      <input type="date" id="range-start" aria-label="From">
+      <span class="date-sep">to</span>
+      <input type="date" id="range-end" aria-label="To (inclusive)">
+      <button type="button" id="range-next" class="icon-btn" aria-label="Next period">›</button>
+      <button type="button" id="play" class="icon-btn" aria-label="Play through">▶</button>
     </div>
 
     <div class="hero">
