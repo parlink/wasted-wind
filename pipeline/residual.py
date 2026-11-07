@@ -58,9 +58,15 @@ def parse_neso(raw: pd.DataFrame) -> pd.DataFrame:
     """
     df = raw.rename(columns={"Constraint Group": "group", "Date_ Time GMT_BST": "local",
                              "Limit_MW": "limit_mw", "Flow_MW": "flow_mw"})
-    # A verbatim republished row would otherwise be read as an extra (GMT) half hour.
-    df = df.drop_duplicates().reset_index(drop=True)
     local = pd.to_datetime(df["local"], format="ISO8601")
+    # Rows per (group, local time): 2 legitimately on the autumn clock change (BST then GMT),
+    # 1 otherwise. Extra rows are republications and are dropped. Rows are never compared by
+    # value: the genuine BST and GMT rows are often identical (flat limits, repeated flows).
+    ambiguous = pd.DatetimeIndex(local).tz_localize(
+        "Europe/London", ambiguous="NaT", nonexistent="shift_forward").isna()
+    n = df.assign(local=local).groupby(["group", "local"]).cumcount().to_numpy()
+    keep = n < np.where(ambiguous, 2, 1)
+    df, local = df[keep].reset_index(drop=True), local[keep].reset_index(drop=True)
     first = df.assign(local=local).groupby(["group", "local"]).cumcount().to_numpy() == 0
     utc = (pd.DatetimeIndex(local).tz_localize("Europe/London", ambiguous=first,
                                                 nonexistent="shift_forward").tz_convert("UTC"))

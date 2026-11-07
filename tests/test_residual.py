@@ -125,11 +125,25 @@ def test_built_output_matches_contract():
     rs.check_output(pd.read_parquet(OUT))
 
 
-def test_neso_republished_duplicate_row_is_not_read_as_gmt():
-    # A row repeated verbatim on the autumn day must not become a third, GMT-labelled period.
+def test_neso_identical_bst_and_gmt_rows_are_both_kept():
+    # Review #25: on the autumn day the BST and GMT 01:00 rows are often identical (flat limits).
+    raw = pd.DataFrame({"Constraint Group": ["SCOTEX"] * 2,
+                        "Date_ Time GMT_BST": ["2025-10-26T01:00:00"] * 2,
+                        "Limit_MW": [3, 3], "Flow_MW": [0, 0]})
+    out = rs.parse_neso(raw)
+    assert sorted(out.period_start) == [pd.Timestamp("2025-10-26T00:00Z"), pd.Timestamp("2025-10-26T01:00Z")]
+
+
+def test_neso_republication_beyond_two_rows_is_dropped():
     raw = pd.DataFrame({"Constraint Group": ["SCOTEX"] * 3,
                         "Date_ Time GMT_BST": ["2025-10-26T01:00:00"] * 3,
-                        "Limit_MW": [3, 3, 4], "Flow_MW": [0, 0, 0]})
+                        "Limit_MW": [3, 3, 3], "Flow_MW": [0, 0, 0]})
+    assert len(rs.parse_neso(raw)) == 2
+
+
+def test_neso_duplicate_at_an_ordinary_time_keeps_one_row():
+    raw = pd.DataFrame({"Constraint Group": ["SCOTEX"] * 2,
+                        "Date_ Time GMT_BST": ["2025-07-01T12:00:00"] * 2,
+                        "Limit_MW": [3, 3], "Flow_MW": [0, 0]})
     out = rs.parse_neso(raw)
-    assert len(out) == 2
-    assert sorted(out.period_start) == [pd.Timestamp("2025-10-26T00:00Z"), pd.Timestamp("2025-10-26T01:00Z")]
+    assert out.period_start.tolist() == [pd.Timestamp("2025-07-01T11:00Z")]
