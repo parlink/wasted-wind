@@ -18,19 +18,22 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = ROOT / "app" / "fixtures"
 PROCESSED_DIR = ROOT / "data" / "processed"
 REAL_FARMS = ROOT / "reference" / "farms.csv"
-VERSION_FILE = PROCESSED_DIR / "DATA_VERSION"   # optional one-line release tag, e.g. "data-v1"
+# data/processed/DATA_VERSION: optional one-line release tag, e.g. "data-v1"
 
 
 def _usable(p: Path) -> bool:
     return p.is_file() and p.stat().st_size > 0
 
 
-def resolve(name: str) -> tuple[Path, str]:
+def resolve(name: str, source: str | None = None) -> tuple[Path, str]:
     """Return (path, source) for a contract file, source being 'processed' or 'fixtures'.
 
     reference/farms.csv is only used once real curtailment exists, because its farm_ids
     don't match the fixture curtailment (the map would show farms with no data).
+    Pass source= to pin a file to one side (see group_source).
     """
+    if source == "fixtures":
+        return FIXTURES_DIR / name, "fixtures"
     mode = os.environ.get("WW_DATA_SOURCE", "auto")
     if name == "farms.csv":
         real = REAL_FARMS
@@ -40,9 +43,18 @@ def resolve(name: str) -> tuple[Path, str]:
         ok = _usable(real)
     if mode != "fixtures" and ok:
         return real, "processed"
-    if mode == "processed":
-        raise FileNotFoundError(f"{real} missing and WW_DATA_SOURCE=processed")
+    if mode == "processed" or source == "processed":
+        raise FileNotFoundError(f"{real} missing (WW_DATA_SOURCE={mode}, source={source})")
     return FIXTURES_DIR / name, "fixtures"
+
+
+def group_source(*names: str) -> str:
+    """'processed' only if every file in the group is real, else 'fixtures'.
+
+    Numbers that combine several files (B4/B6 split, the simulator) must take them all from
+    one side: real curtailment with fake residual would be meaningless.
+    """
+    return "processed" if all(resolve(n)[1] == "processed" for n in names) else "fixtures"
 
 
 def _check_columns(df: pd.DataFrame, required: list[str], path: Path) -> None:
@@ -65,9 +77,9 @@ def _read(path: Path, mtime: float, name: str) -> pd.DataFrame:
     return df
 
 
-def table(name: str) -> tuple[pd.DataFrame, str]:
+def table(name: str, source: str | None = None) -> tuple[pd.DataFrame, str]:
     """A contract table (farms.csv or one of the parquet files) and where it came from."""
-    path, source = resolve(name)
+    path, source = resolve(name, source)
     return _read(path, path.stat().st_mtime, name), source
 
 
@@ -79,15 +91,16 @@ def json_file(name: str) -> tuple[dict, str]:
 def data_version(source: str) -> str:
     if source == "fixtures":
         return "fixtures"
-    if VERSION_FILE.is_file():
-        return VERSION_FILE.read_text().strip() or "unknown"
+    version_file = PROCESSED_DIR / "DATA_VERSION"
+    if version_file.is_file():
+        return version_file.read_text().strip() or "unknown"
     return "unknown"
 
 
-def signature(*names: str) -> tuple:
+def signature(*names: str, source: str | None = None) -> tuple:
     """Identifies the exact data behind a result, for cache keys."""
     out = []
     for n in names:
-        p, s = resolve(n)
+        p, s = resolve(n, source)
         out.append((n, s, p.stat().st_mtime))
     return tuple(out)

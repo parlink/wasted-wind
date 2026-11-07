@@ -18,10 +18,16 @@ def _frames():
 
 
 def calibration_by_month() -> dict:
-    """{'YYYY-MM': simulated MWh}, used by GET /api/method/calibration."""
-    _, sim, _ = _frames()
-    s = sim.sum(axis=1)
-    return {k: float(v) for k, v in s.groupby(s.index.strftime("%Y-%m")).sum().items()}
+    """{'YYYY-MM': (historical MWh, simulated MWh)} from one consistent dataset.
+
+    Used by GET /api/method/calibration; both sides come from the simulator's inputs, so a
+    partial data release never compares real history against a fake simulation.
+    """
+    _, sim, hist = _frames()
+    s, h = sim.sum(axis=1), hist.sum(axis=1)
+    months = s.index.strftime("%Y-%m")
+    return {m: (float(hv), float(sv)) for (m, hv), sv in
+            zip(h.groupby(months).sum().items(), s.groupby(months).sum().to_numpy())}
 
 
 def calibration_report() -> dict:

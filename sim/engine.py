@@ -95,12 +95,20 @@ def _wide(df: pd.DataFrame, col: str, periods, bmus) -> np.ndarray:
     return df.pivot(index="period_start", columns="bmu_id", values=col).reindex(index=periods, columns=bmus).to_numpy(float)
 
 
+CORE_FILES = ("curtailment.parquet", "residual.parquet", "farms.csv")
+
+
 @lru_cache(maxsize=2)
-def _load(signature: tuple) -> Inputs:
-    curt, _ = data.table("curtailment.parquet")
-    resid, _ = data.table("residual.parquet")
-    farms, _ = data.table("farms.csv")
-    fc, _ = data.table("forecast.parquet")
+def _load(signature: tuple, source: str) -> Inputs:
+    # one consistent dataset: real only if curtailment AND residual are real (see data.group_source)
+    curt, _ = data.table("curtailment.parquet", source)
+    resid, _ = data.table("residual.parquet", source)
+    farms, _ = data.table("farms.csv", source)
+    fc_path, fc_source = data.resolve("forecast.parquet")
+    if fc_source == source:
+        fc, _ = data.table("forecast.parquet", source)
+    else:   # fake forecast with real farms is meaningless: plan without one (reactive fallback)
+        fc = data.table("forecast.parquet", "fixtures")[0].iloc[:0]
 
     periods = pd.DatetimeIndex(sorted(curt["period_start"].unique()))
     start, end = periods.min().normalize(), periods.max().normalize() + pd.Timedelta(days=1)
@@ -146,8 +154,13 @@ def _load(signature: tuple) -> Inputs:
     )
 
 
+def input_source() -> str:
+    return data.group_source(*CORE_FILES)
+
+
 def load_inputs() -> Inputs:
-    return _load(data.signature("curtailment.parquet", "residual.parquet", "farms.csv", "forecast.parquet"))
+    src = input_source()
+    return _load(data.signature(*CORE_FILES, source=src) + data.signature("forecast.parquet"), src)
 
 
 # ---------- core ----------
@@ -357,6 +370,7 @@ def simulate(scenario: dict) -> dict:
         "farms": [{"farm_id": f, "curtailed_mwh": round(float(sf[f]), 3), "baseline_curtailed_mwh": round(float(bf[f]), 3)}
                   for f in bf.sort_values(ascending=False).index],
         "dispatcher": DISPATCHER if sc["batteries"] else None,
+        "data_source": input_source(),
         "levers_not_yet_applied": ignored,
     }
 

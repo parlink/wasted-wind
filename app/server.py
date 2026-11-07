@@ -101,10 +101,10 @@ def cost_totals(curt: pd.DataFrame, resid: pd.DataFrame, years: float,
                 intensity=contract.DEFAULT_CARBON_INTENSITY_T_MWH) -> dict:
     mwh = float(curt["curtailed_mwh_a"].sum())
     payments = float((curt["curtailed_mwh_a"] * -curt["bid_price_gbp_mwh"]).fillna(0).sum())
-    split = boundary_split_mwh(curt, resid)
+    split = boundary_split_mwh(curt, resid) if resid is not None else None
     return {
         "curtailed_twh": mwh / 1e6,
-        "by_boundary_twh": {k: v / 1e6 for k, v in split.items()},
+        "by_boundary_twh": {k: v / 1e6 for k, v in split.items()} if split else None,
         "payments_gbp": payments,
         "replacement_gas_gbp": mwh * contract.replacement_gbp_mwh(gas_p_therm, carbon_gbp_t, intensity),
         "co2_t": mwh * intensity,
@@ -113,8 +113,17 @@ def cost_totals(curt: pd.DataFrame, resid: pd.DataFrame, years: float,
 
 
 def round_totals(t: dict) -> dict:
-    return {k: ({kk: num(vv, 9) for kk, vv in v.items()} if isinstance(v, dict)
+    return {k: (None if v is None else {kk: num(vv, 9) for kk, vv in v.items()} if isinstance(v, dict)
                 else num(v, 9 if k == "curtailed_twh" else 1)) for k, v in t.items()}
+
+
+RESIDUAL_NOTE = "B4/B6 split needs the real residual.parquet (#4); not mixing fake residual into real curtailment"
+
+
+def residual_matching(curt_source: str):
+    """residual.parquet only if it comes from the same side as curtailment, else None."""
+    resid, src = data.table("residual.parquet")
+    return (resid, src) if src == curt_source else (None, None)
 
 
 def known_farm(farm_id: str) -> None:
@@ -153,14 +162,15 @@ def farms():
 @app.get("/api/reveal/summary")
 def reveal_summary(start: Optional[str] = None, end: Optional[str] = None):
     curt_all, s1 = data.table("curtailment.parquet")
-    resid, s2 = data.table("residual.parquet")
+    resid, s2 = residual_matching(s1)
     curt = window(curt_all, "period_start", start, end)
     totals = round_totals(cost_totals(curt, resid, window_years(curt_all, start, end)))
     g = curt.groupby("farm_id").agg(curtailed_mwh=("curtailed_mwh_a", "sum"),
                                     potential_mwh=("planned_mwh", "sum"))
     g["share_wasted"] = (g["curtailed_mwh"] / g["potential_mwh"]).where(g["potential_mwh"] > 0, 0.0)
     g = g.sort_values("curtailed_mwh", ascending=False).reset_index()
-    return {"totals": totals, "farms": records(g), "meta": meta(s1, s2)}
+    extra = {} if resid is not None else {"note": RESIDUAL_NOTE}
+    return {"totals": totals, "farms": records(g), "meta": meta(s1, **extra)}
 
 
 @app.get("/api/reveal/farm/{farm_id}")
@@ -175,7 +185,12 @@ def reveal_farm(farm_id: str, start: Optional[str] = None, end: Optional[str] = 
 
 @app.get("/api/reveal/boundaries")
 def reveal_boundaries(start: Optional[str] = None, end: Optional[str] = None):
-    resid, src = data.table("residual.parquet")
+    _, curt_src = data.resolve("curtailment.parquet")
+    resid, src = residual_matching(curt_src)
+    if resid is None:
+        return {"boundaries": [{"boundary": b, "share_periods_binding": None, "approximate": True}
+                               for b in contract.BOUNDARY_OF_ZONE.values()],
+                "meta": meta(curt_src, note=RESIDUAL_NOTE)}
     r = window(resid, "period_start", start, end)
     out = []
     for zone, boundary in contract.BOUNDARY_OF_ZONE.items():
@@ -403,29 +418,31 @@ def scenario(sc: Scenario):
     engine_name = body.get("engine")
     result = {k: v for k, v in body.items() if k != "engine"}
     return {"fingerprint": fp, "cached": cached, "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
-            **result, "meta": meta(*srcs, engine=engine_name)}
+            **result, "meta": meta(*([body["data_source"]] if body.get("data_source") else srcs), engine=engine_name)}
 
 
 # ---------- method ----------
 
 @app.get("/api/method/calibration")
 def method_calibration():
-    curt, src = data.table("curtailment.parquet")
-    hist = curt.groupby(curt["period_start"].dt.strftime("%Y-%m"))["curtailed_mwh_a"].sum()
-    sim_by_month = None
-    try:                                         # filled in by #9
+    """Simulator with historical settings vs Part 1, both from the simulator's own inputs."""
+    try:
         from sim.calibrate import calibration_by_month
-        sim_by_month = calibration_by_month()   # {"YYYY-MM": simulated_mwh}
-    except ImportError:
-        pass
-    by_month = [{"month": m, "historical_mwh": num(v, 1),
-                 "simulated_mwh": num(sim_by_month.get(m), 1) if sim_by_month else None}
-                for m, v in hist.items()]
-    h_twh = float(hist.sum()) / 1e6
-    s_twh = (sum(v for v in sim_by_month.values()) / 1e6) if sim_by_month else None
+        from sim.engine import input_source
+    except ImportError:                          # simulator not available: history only
+        curt, src = data.table("curtailment.parquet")
+        hist = curt.groupby(curt["period_start"].dt.strftime("%Y-%m"))["curtailed_mwh_a"].sum()
+        return {"historical_twh": num(float(hist.sum()) / 1e6, 6), "simulated_twh": None, "error_pct": None,
+                "by_month": [{"month": m, "historical_mwh": num(v, 1), "simulated_mwh": None} for m, v in hist.items()],
+                "meta": meta(src)}
+    months = calibration_by_month()
+    h_twh = sum(h for h, _ in months.values()) / 1e6
+    s_twh = sum(v for _, v in months.values()) / 1e6
     return {"historical_twh": num(h_twh, 6), "simulated_twh": num(s_twh, 6),
-            "error_pct": num((s_twh - h_twh) / h_twh * 100, 2) if s_twh is not None and h_twh else None,
-            "by_month": by_month, "meta": meta(src)}
+            "error_pct": num((s_twh - h_twh) / h_twh * 100, 2) if h_twh else None,
+            "by_month": [{"month": m, "historical_mwh": num(h, 1), "simulated_mwh": num(v, 1)}
+                         for m, (h, v) in months.items()],
+            "meta": meta(input_source())}
 
 
 # Static dashboard last, so /api routes win.

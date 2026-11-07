@@ -19,6 +19,18 @@ const state = {
   farms: [], reveal: null, boundaries: null, tomorrow: null, metrics: null,
 };
 const charts = {};
+const fakeParts = new Set();   // which datasets on screen are still fixtures
+
+function noteSource(part, meta) {
+  if (!meta) return;
+  if (meta.source === "fixtures") fakeParts.add(part); else fakeParts.delete(part);
+  const banner = $("fake-banner"), tag = $("source-tag");
+  banner.hidden = fakeParts.size === 0;
+  banner.textContent = fakeParts.size
+    ? `Fake data (app/fixtures) in: ${[...fakeParts].join(", ")}. Real numbers arrive with Person A's data releases.` : "";
+  tag.textContent = fakeParts.size ? (fakeParts.has("wind farm waste") ? "fake data" : "partly fake data") : `data ${meta.data_version}`;
+  tag.className = "tag" + (fakeParts.size ? " fake" : "");
+}
 const $ = (id) => document.getElementById(id);
 
 // ---------- small helpers ----------
@@ -211,7 +223,9 @@ function drawBoundaryLabels() {
   const share = {};
   for (const b of (state.boundaries && state.boundaries.boundaries) || []) share[b.boundary] = b.share_periods_binding;
   for (const [name, coords] of Object.entries(BOUNDARIES)) {
-    const label = el("div", { class: "boundary-label" }, `${name} · full ${fmtPct(share[name])} of the time · approximate`);
+    const text = share[name] == null ? `${name} · approximate · awaiting boundary data`
+      : `${name} · full ${fmtPct(share[name])} of the time · approximate`;
+    const label = el("div", { class: "boundary-label" }, text);
     // label at the line's eastern end, out at sea, so it doesn't cover cities
     boundaryMarkers.push(new maplibregl.Marker({ element: label, anchor: "left", offset: [6, 0] })
       .setLngLat(coords[coords.length - 1]).addTo(map));
@@ -277,6 +291,7 @@ async function loadReveal() {
     const q = windowParams();
     const [reveal, boundaries] = await Promise.all([api(`/api/reveal/summary${q}`), api(`/api/reveal/boundaries${q}`)]);
     state.reveal = reveal; state.boundaries = boundaries;
+    noteSource("wind farm waste", reveal.meta);
     renderReveal();
     updateMap();
     if (state.farm) await loadFarmDetail();
@@ -294,8 +309,15 @@ function renderReveal() {
   $("t-homes").textContent = fmtCompact(t.homes_equiv);
 
   // B4 vs B6: tall segmented bar, legend names the parts
-  const b4 = t.by_boundary_twh.B4 || 0, b6 = t.by_boundary_twh.B6 || 0, tot = b4 + b6;
   const bar = clear($("boundary-bar"));
+  if (!t.by_boundary_twh) {   // real curtailment but no real residual yet: don't guess
+    clear($("boundary-legend"));
+    $("binding-note").textContent = "Waiting for the boundary data (residual, issue #4) to split this between B4 and B6.";
+    hbars($("farm-bars"), state.reveal.farms.map((f) => ({ id: f.farm_id, label: farmName(f.farm_id), value: f.curtailed_mwh })),
+      { color: C.waste, selected: state.farm, onClick: selectFarm, fmt: fmtEnergy });
+    return;
+  }
+  const b4 = t.by_boundary_twh.B4 || 0, b6 = t.by_boundary_twh.B6 || 0, tot = b4 + b6;
   const parts = [["B4", "North–South Scotland", b4, C.planned], ["B6", "Scotland–England", b6, C.waste]];
   bar.setAttribute("aria-label", parts.map(([n, , v]) => `${n} ${fmtPct(tot ? v / tot : 0)}`).join(", "));
   for (const [name, desc, v, color] of parts) {
@@ -428,6 +450,8 @@ async function loadPredict() {
   tab.classList.add("loading");
   try {
     if (!state.tomorrow) [state.tomorrow, state.metrics] = await Promise.all([api("/api/forecast/tomorrow"), api("/api/forecast/metrics")]);
+    noteSource("forecast", state.tomorrow.meta);
+    $("pred-fake").hidden = state.tomorrow.meta.source !== "fixtures";
     renderPredict();
     updateMap();
   } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
@@ -558,12 +582,8 @@ async function boot() {
     const start = new Date(health.range.start), end = new Date(health.range.end);
     for (let d = new Date(start); d < end; d = new Date(d.getTime() + 86400000)) state.days.push(d);
     $("day-slider").max = Math.max(0, state.days.length - 1);
-    const fake = health.meta.source === "fixtures";
-    $("fake-banner").hidden = !fake;
-    const tag = $("source-tag");
-    tag.textContent = fake ? "fake data" : `data ${health.meta.data_version}`;
-    tag.className = "tag" + (fake ? " fake" : "");
-    tag.title = `Generated ${health.meta.generated_at}`;
+    noteSource("wind farm waste", health.meta);
+    $("source-tag").title = `Generated ${health.meta.generated_at}`;
     // The panel must never wait on map tiles (venue Wi-Fi): load both, draw the map when ready.
     initMap().then(updateMap).catch((e) => console.warn("map failed to load", e));
     await loadReveal();
