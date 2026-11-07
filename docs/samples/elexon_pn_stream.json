@@ -1,0 +1,71 @@
+{
+ "_request": "https://data.elexon.co.uk/bmrs/api/v1/datasets/PN/stream?from=2025-03-01T05%3A00Z&to=2025-03-01T07%3A00Z&bmUnit=T_SGRWO-1",
+ "response": [
+  {
+   "dataset": "PN",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 15,
+   "timeFrom": "2025-03-01T07:00:00Z",
+   "timeTo": "2025-03-01T07:29:00Z",
+   "levelFrom": 225,
+   "levelTo": 225,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  },
+  {
+   "dataset": "PN",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 14,
+   "timeFrom": "2025-03-01T06:59:00Z",
+   "timeTo": "2025-03-01T07:00:00Z",
+   "levelFrom": 230,
+   "levelTo": 225,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  },
+  {
+   "dataset": "PN",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 14,
+   "timeFrom": "2025-03-01T06:30:00Z",
+   "timeTo": "2025-03-01T06:59:00Z",
+   "levelFrom": 230,
+   "levelTo": 230,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  },
+  {
+   "dataset": "PN",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 13,
+   "timeFrom": "2025-03-01T06:29:00Z",
+   "timeTo": "2025-03-01T06:30:00Z",
+   "levelFrom": 235,
+   "levelTo": 230,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  },
+  {
+   "dataset": "PN",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 13,
+   "timeFrom": "2025-03-01T06:00:00Z",
+   "timeTo": "2025-03-01T06:29:00Z",
+   "levelFrom": 235,
+   "levelTo": 235,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  },
+  {
+   "dataset": "PN",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 12,
+   "timeFrom": "2025-03-01T05:30:00Z",
+   "timeTo": "2025-03-01T06:00:00Z",
+   "levelFrom": 234,
+   "levelTo": 234,
+   "nationalGridBmUnit": "SGRWO-1",
+   "bmUnit": "T_SGRWO-1"
+  }
+ ]
+}

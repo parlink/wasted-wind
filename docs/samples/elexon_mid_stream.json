@@ -1,0 +1,59 @@
+{
+ "_request": "https://data.elexon.co.uk/bmrs/api/v1/datasets/MID/stream?from=2025-03-01T05%3A00Z&to=2025-03-01T06%3A00Z",
+ "response": [
+  {
+   "dataset": "MID",
+   "startTime": "2025-03-01T06:00:00Z",
+   "dataProvider": "APXMIDP",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 13,
+   "price": 101.75,
+   "volume": 1212.2
+  },
+  {
+   "dataset": "MID",
+   "startTime": "2025-03-01T06:00:00Z",
+   "dataProvider": "N2EXMIDP",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 13,
+   "price": 0.0,
+   "volume": 0.0
+  },
+  {
+   "dataset": "MID",
+   "startTime": "2025-03-01T05:30:00Z",
+   "dataProvider": "APXMIDP",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 12,
+   "price": 101.53,
+   "volume": 1121.05
+  },
+  {
+   "dataset": "MID",
+   "startTime": "2025-03-01T05:30:00Z",
+   "dataProvider": "N2EXMIDP",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 12,
+   "price": 0.0,
+   "volume": 0.0
+  },
+  {
+   "dataset": "MID",
+   "startTime": "2025-03-01T05:00:00Z",
+   "dataProvider": "APXMIDP",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 11,
+   "price": 98.15,
+   "volume": 840.3
+  },
+  {
+   "dataset": "MID",
+   "startTime": "2025-03-01T05:00:00Z",
+   "dataProvider": "N2EXMIDP",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 11,
+   "price": 0.0,
+   "volume": 0.0
+  }
+ ]
+}

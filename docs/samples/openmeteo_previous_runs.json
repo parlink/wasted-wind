@@ -1,0 +1,52 @@
+{
+ "_request": "https://previous-runs-api.open-meteo.com/v1/forecast?latitude=56.58&longitude=-1.76&start_date=2025-03-01&end_date=2025-03-01&hourly=wind_speed_100m_previous_day1%2Cwind_speed_100m_previous_day2%2Ctemperature_2m_previous_day1&wind_speed_unit=ms&timezone=GMT",
+ "response": {
+  "latitude": 56.588497,
+  "longitude": -1.7488251,
+  "generationtime_ms": 26.612043380737305,
+  "utc_offset_seconds": 0,
+  "timezone": "GMT",
+  "timezone_abbreviation": "GMT",
+  "elevation": 0.0,
+  "hourly_units": {
+   "time": "iso8601",
+   "wind_speed_100m_previous_day1": "m/s",
+   "wind_speed_100m_previous_day2": "m/s",
+   "temperature_2m_previous_day1": "\u00b0C"
+  },
+  "hourly": {
+   "time": [
+    "2025-03-01T00:00",
+    "2025-03-01T01:00",
+    "2025-03-01T02:00",
+    "2025-03-01T03:00",
+    "2025-03-01T04:00",
+    "2025-03-01T05:00"
+   ],
+   "wind_speed_100m_previous_day1": [
+    11.3,
+    11.3,
+    11.2,
+    11.5,
+    12.2,
+    12.1
+   ],
+   "wind_speed_100m_previous_day2": [
+    10.26,
+    10.79,
+    11.51,
+    12.04,
+    12.2,
+    12.23
+   ],
+   "temperature_2m_previous_day1": [
+    6.2,
+    6.2,
+    6.3,
+    6.1,
+    6.1,
+    6.2
+   ]
+  }
+ }
+}
