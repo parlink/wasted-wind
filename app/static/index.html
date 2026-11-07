@@ -146,6 +146,8 @@
       <div id="sim-value" class="hero-value">–</div>
       <div id="sim-delta" class="delta"></div>
       <div id="sim-history" class="sub"></div>
+      <p class="note">Gains north of B4 (a bigger B4, a cable or new demand in the north) are upper bounds: the records can't
+        tell which pinch point each switch-off was for, so some waste counted as B4 may really have been caused further south.</p>
     </div>
     <div class="tiles">
       <div class="tile"><div class="label">Paid to farms to switch off</div><div class="value" id="s-payments">–</div><div class="delta" id="s-payments-d"></div></div>
@@ -183,6 +185,16 @@
         </div>
         <div class="lever-row"><input type="range" aria-label="B6 MW" disabled><output></output></div>
       </div>
+      <div class="lever" id="link-lever">
+        <label for="link-zone">A new undersea cable straight to England</label>
+        <select id="link-zone" aria-label="Where the new cable starts">
+          <option value="">None</option>
+          <option value="north_scotland">From north of B4 (e.g. Peterhead)</option>
+          <option value="south_scotland">From between B4 and B6 (e.g. Torness)</option>
+        </select>
+        <div class="lever-row" id="link-size-row" hidden><input type="range" id="link-gw" min="0.5" max="4" step="0.5" value="2" aria-label="Cable size"><output id="link-gw-out"></output></div>
+        <p class="note">It skips the pinch points: power from that zone can go straight south under the sea. Assumed available 95% of the time.</p>
+      </div>
     </fieldset>
 
     <fieldset class="lever-group">
@@ -200,6 +212,55 @@
           <button type="button" data-q="perfect" aria-pressed="false">Knows the future</button>
         </div>
         <p class="note">The gap between these is what our forecast is worth. Our forecast only exists for the months we tested it on; outside them a battery plans without one.</p>
+      </div>
+    </fieldset>
+
+    <fieldset class="lever-group">
+      <legend>New electricity demand in Scotland</legend>
+      <p class="note">Using more power in Scotland soaks up wind that would otherwise be wasted. Sizes are the yearly average.</p>
+      <div class="lever">
+        <label for="demand-zone">Where</label>
+        <select id="demand-zone" aria-label="Where the new demand is">
+          <option value="north_scotland">North of B4 (Highlands, Aberdeenshire)</option>
+          <option value="south_scotland">Between B4 and B6 (Central Belt, Borders)</option>
+        </select>
+      </div>
+      <div class="lever">
+        <label for="dem-hp">Heat pumps</label>
+        <div class="lever-row"><input type="range" id="dem-hp" min="0" max="3" step="0.1" value="0"><output id="dem-hp-out"></output></div>
+        <p class="note">Mostly in winter and at breakfast and teatime, following typical Scottish temperatures.</p>
+      </div>
+      <div class="lever">
+        <label for="dem-ev">Electric car charging</label>
+        <div class="lever-row"><input type="range" id="dem-ev" min="0" max="2" step="0.1" value="0"><output id="dem-ev-out"></output></div>
+        <p class="note">Mostly overnight and in the evening.</p>
+      </div>
+      <div class="lever">
+        <label for="dem-dc">Data centres</label>
+        <div class="lever-row"><input type="range" id="dem-dc" min="0" max="3" step="0.1" value="0"><output id="dem-dc-out"></output></div>
+        <p class="note">The same all day, every day.</p>
+      </div>
+    </fieldset>
+
+    <fieldset class="lever-group">
+      <legend>Prices</legend>
+      <p class="note">These only change the £ and CO₂ figures, not how much wind is wasted.</p>
+      <div class="lever">
+        <label for="eco-gas">Gas price</label>
+        <div class="lever-row"><input type="range" id="eco-gas" min="20" max="200" step="5" value="80"><output id="eco-gas-out"></output></div>
+      </div>
+      <div class="lever">
+        <label for="eco-carbon">Carbon price</label>
+        <div class="lever-row"><input type="range" id="eco-carbon" min="0" max="200" step="5" value="50"><output id="eco-carbon-out"></output></div>
+      </div>
+      <div class="lever">
+        <label for="eco-intensity">CO₂ per MWh of gas power</label>
+        <div class="lever-row"><input type="range" id="eco-intensity" min="0.3" max="0.5" step="0.01" value="0.37"><output id="eco-intensity-out"></output></div>
+      </div>
+      <div class="lever">
+        <label for="eco-switch">Switch-off payments</label>
+        <div class="lever-row"><input type="range" id="eco-switch" min="0" max="3" step="0.1" value="1"><output id="eco-switch-out"></output></div>
+        <p class="note">1× = what farms really bid to switch off.</p>
       </div>
     </fieldset>
 
@@ -334,7 +395,11 @@
         <li><b>The constraint flag isn't perfect.</b> We count turn-downs the operator marks as system actions. Some ordinary balancing may be in or out.</li>
         <li><b>33 farms, hand-checked</b> (the top Scottish units by constraint volume), coordinates approximate. Smaller farms are in the background "residual".</li>
         <li><b>NESO's day-ahead limits have no publication time.</b> We assume they're known by 10:00 the day before; the model without them is almost as good (see above).</li>
-        <li><b>Batteries are a simple model:</b> no costs, no wear, no effect on prices, and they charge only from wind that would be wasted.</li>
+        <li><b>Batteries are a simple model:</b> no costs, no wear, no effect on prices, and they charge only from wind that would be wasted.
+          They don't yet sell into spare room on a new undersea cable, so their earnings there are understated.</li>
+        <li><b>Simulator assumptions.</b> A new undersea cable carries its zone's surplus first and is available 95% of the time on average
+          (no individual outages). New demand is a yearly average: heat pumps follow typical Scottish monthly temperatures, not each
+          actual day's; EVs charge mostly overnight; data centres are flat. Price controls change only £ and CO₂, not who is switched off.</li>
       </ul>
     </div>
 
