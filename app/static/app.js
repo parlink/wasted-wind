@@ -55,6 +55,8 @@ function clear(node) { while (node.firstChild) node.removeChild(node.firstChild)
 function showError(err) { const e = $("error"); e.textContent = `Couldn't load data: ${err.message}`; e.hidden = false; }
 
 const nf = (d) => new Intl.NumberFormat("en-GB", { maximumFractionDigits: d });
+const HOME_MWH_PER_YEAR = 2.7;   // average GB home (CONTRACT §7)
+const homesFor = (twh) => (twh == null ? null : (twh * 1e6) / HOME_MWH_PER_YEAR);
 function fmtEnergy(mwh) {
   if (mwh == null) return "–";
   const a = Math.abs(mwh);
@@ -248,16 +250,16 @@ function updateMap() {
   } else {
     for (const f of (state.reveal && state.reveal.farms) || []) byFarm[f.farm_id] = { value: f.curtailed_mwh, share: f.share_wasted };
   }
-  const maxV = Math.max(1e-9, ...Object.values(byFarm).map((v) => v.value || 0));
+  const maxV = Math.max(predict ? 50 : 1e-9, ...Object.values(byFarm).map((v) => v.value || 0));   // 50 MWh floor: tiny forecasts stay small
   const R = 26;   // radius of the largest circle, px; area is proportional to the value
   const features = state.farms.map((f) => {
     const v = byFarm[f.farm_id] || { value: 0, share: 0 };
     const r = 3 + R * Math.sqrt((v.value || 0) / maxV);
     const tip = simulate
-      ? `Scenario: ${fmtEnergy(v.value)} (history ${fmtEnergy(v.base)}) · indicative`
+      ? `Your scenario: ${fmtEnergy(v.value)} wasted (really: ${fmtEnergy(v.base)}) · rough`
       : predict
-      ? `Forecast tomorrow: ${fmtEnergy(v.value)}`
-      : `Switched off: ${fmtEnergy(v.value)} (${fmtPct(v.share)} of planned output)`;
+      ? `Expected to be wasted tomorrow: ${fmtEnergy(v.value)}`
+      : `Wasted: ${fmtEnergy(v.value)} (${fmtPct(v.share)} of what it could have made)`;
     return { type: "Feature", geometry: { type: "Point", coordinates: [f.lon, f.lat] },
       properties: { farm_id: f.farm_id, name: f.farm_name, value: v.value || 0, share: v.share || 0, r, tip } };
   });
@@ -275,10 +277,10 @@ function updateMap() {
 
 function drawMapLegend(predict, maxV, simulate = false) {
   const node = clear($("map-legend"));
-  node.append(el("div", {}, simulate ? "Circle area: waste in this scenario (indicative)"
-    : predict ? "Circle area: forecast waste tomorrow" : "Circle area: energy switched off"));
-  if (!(maxV > 0)) {
-    node.append(el("div", { class: "sub" }, predict && !simulate ? "No waste forecast for any farm" : "No wind switched off here"));
+  node.append(el("div", {}, simulate ? "Circle size: wind wasted in your scenario"
+    : predict ? "Circle size: wind expected to be wasted tomorrow" : "Circle size: wind power wasted"));
+  if (!(maxV > 0.5)) {
+    node.append(el("div", { class: "sub" }, predict && !simulate ? "No waste forecast for any farm" : "No wind wasted in this period"));
   } else {
   const sizes = el("div", { class: "sizes" });
   for (const frac of [0.1, 0.5, 1]) {
@@ -288,7 +290,7 @@ function drawMapLegend(predict, maxV, simulate = false) {
   node.append(sizes);
   }
   if (!predict) {
-    node.append(el("div", { style: { marginTop: "8px" } }, "Colour: share of planned output switched off"),
+    node.append(el("div", { style: { marginTop: "8px" } }, "Colour: share of the farm's possible output wasted"),
       el("div", { class: "ramp" }), el("div", { class: "ramp-labels" }, el("span", {}, "0%"), el("span", {}, "25%"), el("span", {}, "50%+")));
   }
 }
@@ -317,25 +319,25 @@ function renderReveal() {
   const planned = state.reveal.farms.reduce((s, f) => s + (f.potential_mwh || 0), 0);
   const cut = t.curtailed_twh * 1e6;
   $("hero-sub").textContent = `${windowText()} · ${state.farms.length} farms tracked · ` +
-    (planned <= 0 ? "no output planned"
-      : cut === 0 ? `${fmtEnergy(planned)} planned, all of it delivered: the grid had room`
-      : `${fmtPct(cut / planned)} of the ${fmtEnergy(planned)} planned`);
+    (planned <= 0 ? "no output expected"
+      : cut === 0 ? `none of the ${fmtEnergy(planned)} the farms could make was wasted: the cables had room`
+      : `${fmtPct(cut / planned)} of the ${fmtEnergy(planned)} the farms could have made`);
   $("t-payments").textContent = fmtCompact(t.payments_gbp, "£");
   $("t-gas").textContent = fmtCompact(t.replacement_gas_gbp, "£");
   $("t-co2").textContent = `${fmtCompact(t.co2_t)} t`;
-  $("t-homes").textContent = fmtCompact(t.homes_equiv);
+  $("t-homes").textContent = fmtCompact(homesFor(t.curtailed_twh));
 
   // B4 vs B6: tall segmented bar, legend names the parts
   const bar = clear($("boundary-bar"));
   if (!t.by_boundary_twh) {   // real curtailment but no real residual yet: don't guess
     clear($("boundary-legend"));
-    $("binding-note").textContent = "Waiting for the boundary data (residual, issue #4) to split this between B4 and B6.";
+    $("binding-note").textContent = "The split between the two cables isn't available for this data yet.";
     hbars($("farm-bars"), state.reveal.farms.map((f) => ({ id: f.farm_id, label: farmName(f.farm_id), value: f.curtailed_mwh })),
       { color: C.waste, selected: state.farm, onClick: selectFarm, fmt: fmtEnergy });
     return;
   }
   const b4 = t.by_boundary_twh.B4 || 0, b6 = t.by_boundary_twh.B6 || 0, tot = b4 + b6;
-  const parts = [["B4", "North–South Scotland", b4, C.planned], ["B6", "Scotland–England", b6, C.waste]];
+  const parts = [["B4", "inside Scotland", b4, C.planned], ["B6", "Scotland–England border", b6, C.waste]];
   bar.setAttribute("aria-label", parts.map(([n, , v]) => `${n} ${fmtPct(tot ? v / tot : 0)}`).join(", "));
   for (const [name, desc, v, color] of parts) {
     if (!tot || v <= 0) continue;
@@ -345,8 +347,8 @@ function renderReveal() {
   }
   legend($("boundary-legend"), parts.map(([n, d, v, c]) => ({ label: `${n} ${d} · ${fmtEnergy(v * 1e6)}`, color: c })));
   const sh = Object.fromEntries((state.boundaries.boundaries || []).map((b) => [b.boundary, b.share_periods_binding]));
-  $("binding-note").textContent = `B4 was full in ${fmtPct(sh.B4)} of half hours, B6 in ${fmtPct(sh.B6)}. ` +
-    "Waste in North Scotland while B4 was full counts as B4; everything else as B6.";
+  $("binding-note").textContent = `B4 was full ${fmtPct(sh.B4)} of the time, B6 ${fmtPct(sh.B6)}. ` +
+    "Waste in the far north while B4 was full is counted as B4; the rest as B6.";
 
   hbars($("farm-bars"), state.reveal.farms.map((f) => ({ id: f.farm_id, label: farmName(f.farm_id), value: f.curtailed_mwh })),
     { color: C.waste, selected: state.farm, onClick: selectFarm, fmt: fmtEnergy });
@@ -394,10 +396,10 @@ async function loadFarmDetail() {
   const wasted = s.reduce((a, p) => a + (p.curtailed_mwh_a || 0), 0);
   const planned = s.reduce((a, p) => a + (p.planned_mwh || 0), 0);
   $("farm-sub").textContent = `${nf(0).format(farm.capacity_mw || 0)} MW · ${farm.site_type || ""} · ` +
-    `${fmtEnergy(wasted)} switched off (${fmtPct(planned ? wasted / planned : 0)} of planned) · ${windowText()}`;
+    `${fmtEnergy(wasted)} wasted (${fmtPct(planned ? wasted / planned : 0)} of what it could have made) · ${windowText()}`;
   legend($("farm-legend"), [
-    { label: "Planned (what the farm told the grid)", color: C.planned, kind: "line" },
-    { label: "Delivered (after the grid said stop)", color: C.neutral, kind: "line" },
+    { label: "Could have made (its plan)", color: C.planned, kind: "line" },
+    { label: "Allowed to make", color: C.neutral, kind: "line" },
     { label: "Wasted: the gap", color: C.wasteWash },
   ]);
   lineChart("farm-chart", labels, [
@@ -412,17 +414,17 @@ async function loadFarmDetail() {
   const a = dl.map((k) => daily.get(k).curtailed_mwh_a), b = dl.map((k) => daily.get(k).curtailed_mwh_b);
   const hasB = b.some((v) => v != null);
   legend($("ab-legend"), [
-    { label: "Method A: market data (planned − accepted)", color: C.planned, kind: "line" },
-    ...(hasB ? [{ label: "Method B: physics (wind × power curve − metered)", color: C.waste, kind: "line" }] : []),
+    { label: "From grid switch-off orders", color: C.planned, kind: "line" },
+    ...(hasB ? [{ label: "From weather (wind speed vs metered output)", color: C.waste, kind: "line" }] : []),
   ]);
   lineChart("ab-chart", dl.map((k) => dayFmt.format(new Date(k))), [
     { label: "Method A", data: a, borderColor: C.planned, pointRadius: dl.length < 40 ? 3 : 0, pointBackgroundColor: C.planned },
     ...(hasB ? [{ label: "Method B", data: b, borderColor: C.waste, pointRadius: dl.length < 40 ? 3 : 0, pointBackgroundColor: C.waste }] : []),
   ], { yLabel: "MWh per day" });
   const r = hasB ? pearson(a, b) : null;
-  $("ab-note").textContent = !hasB ? "Method B (the physics cross-check) isn't run for this farm."
+  $("ab-note").textContent = !hasB ? "The weather cross-check isn't available for this farm."
     : r == null ? "Not enough days to compare the two methods."
-    : `Daily correlation between the two methods: r = ${r.toFixed(2)} (we aim for above 0.6).`;
+    : `The two estimates move together day to day: correlation ${r.toFixed(2)} (1 = perfectly, above 0.6 is good).`;
 }
 
 function selectFarm(id) {
@@ -479,7 +481,7 @@ function renderPredict() {
   const farms = tm.farms || [];
   const sel = state.farm && farms.find((f) => f.farm_id === state.farm);
   const scope = sel ? [sel] : farms;
-  $("pred-scope").textContent = sel ? `Tomorrow, ${farmName(sel.farm_id)}` : "Tomorrow, all farms";
+  $("pred-scope").textContent = sel ? `Wind expected to be wasted tomorrow at ${farmName(sel.farm_id)}` : "Wind expected to be wasted tomorrow, all farms";
 
   // hourly totals across the scope (summing farm ranges overstates the joint range: labelled)
   const hours = (scope[0] && scope[0].hours.map((h) => h.hour_start)) || [];
@@ -493,14 +495,14 @@ function renderPredict() {
   const sub = clear($("pred-sub"));
   if (hours.length) sub.append(`For ${dayFmt.format(new Date(hours[0]))} · issued ${shortFmt.format(issued)} UTC `);
   if (stale) sub.append(el("span", { class: "tag stale" }, "stale: older than 36 h"));
-  if (farms.length && total < 0.5) sub.append(el("div", {}, "The model expects the grid to have room for this wind. " +
-    "The range shows how much could still be switched off if it's wrong."));
+  if (farms.length && total < 0.5) sub.append(el("div", {}, "The model expects the cables to have room for this wind. " +
+    "The range shows how much could still be wasted if it's wrong."));
   if (hasRange && hours.length) sub.append(el("div", {},
-    `Range ${fmtEnergy(p10.reduce((a, b) => a + b, 0))} – ${fmtEnergy(p90.reduce((a, b) => a + b, 0))}` +
-    (sel ? " (10th–90th percentile)" : " (sum of each farm's 10th–90th percentile; approximate)")));
+    `Likely range ${fmtEnergy(p10.reduce((a, b) => a + b, 0))} – ${fmtEnergy(p90.reduce((a, b) => a + b, 0))}` +
+    (sel ? " (likely range, 80% of the time)" : " (adding up each farm's likely range, so approximate)")));
 
-  legend($("pred-legend"), [{ label: "Forecast waste", color: C.waste, kind: "line" },
-    ...(hasRange ? [{ label: "10–90% range", color: C.wasteWash }] : [])]);
+  legend($("pred-legend"), [{ label: "Expected waste", color: C.waste, kind: "line" },
+    ...(hasRange ? [{ label: "Likely range (80% of the time)", color: C.wasteWash }] : [])]);
   lineChart("tomorrow-chart", hours.map((h) => hourFmt.format(new Date(h))), [
     ...(hasRange ? [
       { label: "90th percentile", data: p90, borderColor: "transparent", pointRadius: 0, hideInTooltip: false },
@@ -511,7 +513,7 @@ function renderPredict() {
 
   // per-farm table (also the accessible view of the map in this tab)
   const tbl = clear($("pred-table"));
-  tbl.append(el("thead", {}, el("tr", {}, el("th", {}, "Farm"), el("th", { class: "num" }, "Forecast"), el("th", { class: "num" }, "Range"))));
+  tbl.append(el("thead", {}, el("tr", {}, el("th", {}, "Farm"), el("th", { class: "num" }, "Expected"), el("th", { class: "num" }, "Likely range"))));
   const body = el("tbody");
   const rows = farms.map((f) => ({ f, p: f.hours.reduce((s, h) => s + (h.pred_mwh || 0), 0),
     lo: f.hours.reduce((s, h) => s + (h.p10_mwh || 0), 0), hi: f.hours.reduce((s, h) => s + (h.p90_mwh || 0), 0) }))
@@ -526,13 +528,13 @@ function renderPredict() {
 
   // model vs baselines: ours highlighted, baselines neutral
   const m = state.metrics;
-  const names = { lightgbm: "Our model", persistence: "Same hour, 2 days ago", climatology: "Usual for that hour", wind_rule: "Wind threshold rule" };
+  const names = { lightgbm: "Our model", persistence: "Same as 2 days ago", climatology: "Usual for that hour", wind_rule: "Simple windy-day rule" };
   const order = ["lightgbm", "persistence", "climatology", "wind_rule"].filter((k) => m.models[k]);
   hbars($("mae-bars"), order.map((k) => ({ id: k, label: names[k], value: m.models[k].mae_mwh,
     color: k === "lightgbm" ? C.waste : C.neutral })), { fmt: (v) => `${nf(1).format(v)} MWh` });
   const mt = clear($("metrics-table"));
-  mt.append(el("thead", {}, el("tr", {}, el("th", {}, "Model"), el("th", { class: "num" }, "Error"),
-    el("th", { class: "num" }, "Precision"), el("th", { class: "num" }, "Recall"), el("th", { class: "num" }, "Monthly total off by"))));
+  mt.append(el("thead", {}, el("tr", {}, el("th", {}, "Forecast"), el("th", { class: "num" }, "Avg miss"),
+    el("th", { class: "num" }, "Warnings right"), el("th", { class: "num" }, "Events caught"), el("th", { class: "num" }, "Month total off by"))));
   const mb = el("tbody");
   for (const k of order) {
     const x = m.models[k];
@@ -541,8 +543,8 @@ function renderPredict() {
       el("td", { class: "num" }, `${nf(1).format(x.monthly_total_error_pct)}%`)));
   }
   mt.append(mb);
-  $("metrics-note").textContent = `Precision and recall count "waste events" above ${m.event_threshold_mwh} MWh in a farm-hour. ` +
-    `Validation: ${m.validation}. Model ${m.model_version}.`;
+  $("metrics-note").textContent = `An "event" is an hour where a farm wastes over ${m.event_threshold_mwh} MWh. "Warnings right" = how often a predicted event really happened; ` +
+    `"events caught" = how many real events it saw coming. Tested ${m.validation}. Model ${m.model_version}.`;
 
   hbars($("shap-bars"), (m.shap_top_signals || []).map((s) => ({ id: s.signal, label: s.signal.replace(/_/g, " "), value: s.mean_abs_shap })),
     { color: C.planned, fmt: (v) => nf(2).format(v) });
@@ -556,8 +558,8 @@ async function loadBacktest() {
   const bt = await api(`/api/forecast/backtest${q}`);
   if (state.farm !== id) return;
   const s = bt.series;
-  legend($("bt-legend"), [{ label: "What happened", color: C.planned, kind: "line" },
-    { label: "Our forecast (made the day before)", color: C.waste, kind: "line" }]);
+  legend($("bt-legend"), [{ label: "Really wasted", color: C.planned, kind: "line" },
+    { label: "Our forecast, made the day before", color: C.waste, kind: "line" }]);
   lineChart("backtest-chart", s.map((p) => shortFmt.format(new Date(p.hour_start))), [
     { label: "actual", data: s.map((p) => p.actual_mwh), borderColor: C.planned },
     { label: "forecast", data: s.map((p) => p.pred_mwh), borderColor: C.waste },
@@ -627,9 +629,9 @@ async function runSim() {
 
 function deltaText(node, d, base, fmt, lowerIsGood = true) {
   node.className = "delta";
-  if (d == null || Math.abs(d) < 1e-12) { node.textContent = "same as history"; return; }
+  if (d == null || Math.abs(d) < 1e-12) { node.textContent = "same as reality"; return; }
   const pct = base ? ` (${d > 0 ? "+" : "−"}${nf(0).format(Math.abs(d / base) * 100)}%)` : "";
-  node.textContent = `${d > 0 ? "+" : "−"}${fmt(Math.abs(d))} vs history${pct}`;
+  node.textContent = `${d > 0 ? "+" : "−"}${fmt(Math.abs(d))} vs reality${pct}`;
   node.classList.add((d < 0) === lowerIsGood ? "good" : "bad");
 }
 
@@ -640,12 +642,17 @@ function renderSim() {
   const p1 = state.simPart1 && state.simPart1.totals.curtailed_twh;
   const sameData = state.simPart1 && state.simPart1.meta.source === r.meta.source;
   const win = r.window.start ? `${dayFmt.format(new Date(r.window.start))} – ${dayFmt.format(new Date(new Date(r.window.end) - 1))}` : "";
-  $("sim-history").textContent = `${win} · "History" = the simulator with every lever at its historical setting: ${fmtEnergy(b.curtailed_twh * 1e6)}` +
-    (sameData && p1 ? `. Part 1 reconstruction for the same window: ${fmtEnergy(p1 * 1e6)} (gap ${nf(1).format((b.curtailed_twh / p1 - 1) * 100)}%).` : ".");
+  $("sim-history").textContent = `${win} · What really happened: ${fmtEnergy(b.curtailed_twh * 1e6)} wasted` +
+    (sameData && p1 ? ` (the Reveal tab says ${fmtEnergy(p1 * 1e6)}).` : ".");
 
   const tiles = [["payments", "payments_gbp", (v) => fmtCompact(v, "£")], ["gas", "replacement_gas_gbp", (v) => fmtCompact(v, "£")],
     ["co2", "co2_t", (v) => `${fmtCompact(v)} t`], ["homes", "homes_equiv", (v) => fmtCompact(v)]];
   for (const [id, key, fmt] of tiles) {
+    if (key === "homes_equiv") {   // same energy-based count as Reveal
+      $(`s-${id}`).textContent = fmt(homesFor(s.curtailed_twh));
+      deltaText($(`s-${id}-d`), homesFor(d.curtailed_twh), homesFor(b.curtailed_twh), fmt);
+      continue;
+    }
     $(`s-${id}`).textContent = fmt(s[key]);
     deltaText($(`s-${id}-d`), d[key], b[key], fmt);
   }
@@ -654,8 +661,8 @@ function renderSim() {
   const bnode = clear($("sim-boundaries"));
   const max = Math.max(1e-12, ...["B4", "B6"].flatMap((k) => [s.by_boundary_twh[k], b.by_boundary_twh[k]]));
   bnode.append(el("div", { class: "legend" },
-    el("span", { class: "key" }, el("span", { class: "swatch", style: { background: C.neutral } }), "History"),
-    el("span", { class: "key" }, el("span", { class: "swatch", style: { background: C.waste } }), "This scenario")));
+    el("span", { class: "key" }, el("span", { class: "swatch", style: { background: C.neutral } }), "What really happened"),
+    el("span", { class: "key" }, el("span", { class: "swatch", style: { background: C.waste } }), "Your scenario")));
   for (const k of ["B4", "B6"]) {
     bnode.append(el("div", { class: "cmp-row", title: `${k}: history ${fmtEnergy(b.by_boundary_twh[k] * 1e6)}, scenario ${fmtEnergy(s.by_boundary_twh[k] * 1e6)}` },
       el("strong", {}, k),
@@ -669,7 +676,7 @@ function renderSim() {
   const bo = clear($("sim-batteries-out"));
   if (r.batteries.length) {
     const t = el("table", { class: "table" }, el("thead", {}, el("tr", {}, el("th", {}, "Battery"),
-      el("th", { class: "num" }, "Waste caught"), el("th", { class: "num" }, "Revenue"), el("th", { class: "num" }, "Cycles"))));
+      el("th", { class: "num" }, "Wasted wind stored"), el("th", { class: "num" }, "Earned"), el("th", { class: "num" }, "Full cycles"))));
     const tb = el("tbody");
     for (const x of r.batteries) {
       tb.append(el("tr", {}, el("td", {}, x.battery_id), el("td", { class: "num" }, fmtEnergy(x.captured_curtailment_mwh)),
@@ -684,8 +691,8 @@ function renderSim() {
 
   // farms (indicative)
   const ft = clear($("sim-farms"));
-  ft.append(el("thead", {}, el("tr", {}, el("th", {}, "Farm"), el("th", { class: "num" }, "History"),
-    el("th", { class: "num" }, "Scenario"), el("th", { class: "num" }, "Change"))));
+  ft.append(el("thead", {}, el("tr", {}, el("th", {}, "Farm"), el("th", { class: "num" }, "Really"),
+    el("th", { class: "num" }, "Your scenario"), el("th", { class: "num" }, "Change"))));
   const fb = el("tbody");
   for (const f of r.farms.slice(0, 12)) {
     const ch = f.curtailed_mwh - f.baseline_curtailed_mwh;
@@ -784,7 +791,7 @@ function onMapClickPlace(e) {
   if (!state.placing || state.tab !== "simulate") return false;
   const { lng, lat } = e.lngLat;
   const zone = zoneAt(lng, lat);
-  if (!zone) { $("place-hint").textContent = "That's south of B6 (England), outside the model. Click in Scotland."; return true; }
+  if (!zone) { $("place-hint").textContent = "That's in England, outside the model. Click in Scotland."; return true; }
   batteryN += 1;
   state.sim.batteries.push({ battery_id: `battery_${batteryN}`, lat: +lat.toFixed(4), lon: +lng.toFixed(4), zone,
     power_mw: 200, energy_mwh: 400, efficiency: 0.88 });
@@ -833,7 +840,7 @@ async function loadSimulate() {
 // ---------- Autopilot ----------
 
 const AP_COLORS = { charge: C.planned, discharge: C.waste, hold: C.grid };
-const STRATEGY_NAMES = { do_nothing: "Do nothing", reactive: "No forecast (reactive)", forecast: "Our forecast", perfect: "Perfect hindsight" };
+const STRATEGY_NAMES = { do_nothing: "No battery", reactive: "No forecast", forecast: "Our forecast", perfect: "Knows the future" };
 state.ap = { scorecard: null, day: null, date: null, strategy: "forecast", planner: "rule", battery: null, step: -1, timer: null };
 let apInit = false;
 
@@ -872,17 +879,17 @@ function renderScorecard() {
   const f = res.forecast, r = res.reactive;
   $("ap-headline").textContent = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
   const period = sc.period ? `${dayFmt.format(new Date(sc.period.start))} – ${dayFmt.format(new Date(new Date(sc.period.end) - 1))}` : "";
-  $("ap-headline-sub").textContent = `Share of the hindsight battery's revenue earned with our forecast vs with no forecast, ` +
+  $("ap-headline-sub").textContent = `Share of the best possible earnings a battery makes with our forecast vs with no forecast. ` +
     `${sc.batteries.length} batteries, ${period}. ` +
-    (apLpCeiling() ? `"Hindsight" = the best any schedule could have done, knowing exactly what happened.`
-      : `"Hindsight" = the same rules given perfect knowledge of the day.`) +
+    (apLpCeiling() ? `"Best possible" = a battery that knows the future.`
+      : `"Best possible" = the same rules, knowing what will happen that day.`) +
     (holdoutText(sc) ? ` ${holdoutText(sc)}` : "");
   const order = ["perfect", "forecast", "reactive", "do_nothing"].filter((k) => res[k]);
   hbars($("ap-ratio-bars"), order.map((k) => ({ id: k, label: STRATEGY_NAMES[k], value: res[k].capture_ratio,
     color: k === "forecast" ? C.planned : C.neutral })), { fmt: fmtPct });
   const t = clear($("ap-scorecard"));
-  t.append(el("thead", {}, el("tr", {}, el("th", {}, "Battery plans with"), el("th", { class: "num" }, "Waste caught"),
-    el("th", { class: "num" }, "Revenue"), el("th", { class: "num" }, "Payments avoided"))));
+  t.append(el("thead", {}, el("tr", {}, el("th", {}, "Battery plans with"), el("th", { class: "num" }, "Wasted wind stored"),
+    el("th", { class: "num" }, "Earned"), el("th", { class: "num" }, "Switch-off payments saved"))));
   const tb = el("tbody");
   for (const k of order) {
     const x = res[k];
@@ -890,8 +897,7 @@ function renderScorecard() {
       el("td", { class: "num" }, fmtCompact(x.revenue_gbp, "£")), el("td", { class: "num" }, fmtCompact(x.payments_avoided_gbp, "£"))));
   }
   t.append(tb);
-  $("ap-score-note").textContent = "Every battery is executed against what really happened: it can only catch real waste " +
-    "and only sell when the cable south has room. Batteries: " +
+  $("ap-score-note").textContent = "Each battery can only store wind that was really wasted, and only sell when the cables south have room. Batteries tested: " +
     sc.batteries.map((b) => `${b.battery_id} (${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh)`).join(", ") + ".";
 }
 
@@ -923,9 +929,9 @@ function renderApDay() {
   const stale = day.live && issued && Date.now() - issued.getTime() > 36 * 3600 * 1000;
   badge.textContent = day.live ? (stale ? "live · stale" : "live") : "replay of the backtest";
   badge.className = "tag" + (day.live && !stale ? " live" : stale ? " stale" : "");
-  $("ap-issued").textContent = issued ? `Plan issued ${shortFmt.format(issued)} UTC, the day before, using only what was known then.` : "";
-  legend($("ap-legend"), [{ label: "Charge (soaking up waste)", color: AP_COLORS.charge },
-    { label: "Discharge (selling with cable room)", color: AP_COLORS.discharge }, { label: "Hold", color: AP_COLORS.hold }]);
+  $("ap-issued").textContent = issued ? `Plan made ${shortFmt.format(issued)} UTC, using only what was known at that time.` : "";
+  legend($("ap-legend"), [{ label: "Storing wasted wind", color: AP_COLORS.charge },
+    { label: "Selling (cables have room)", color: AP_COLORS.discharge }, { label: "Waiting", color: AP_COLORS.hold }]);
 
   const strip = clear($("ap-strip")), log = clear($("ap-log"));
   if (!bat) {
@@ -937,8 +943,8 @@ function renderApDay() {
   const caught = steps.reduce((s, x) => s + (x.captured_curtailment_mwh || 0), 0);
   const rev = steps.some((x) => x.revenue_gbp != null) ? steps.reduce((s, x) => s + (x.revenue_gbp || 0), 0) : null;
   const n = (a) => steps.filter((x) => x.action === a).length;
-  $("ap-day-sum").textContent = `${bat.battery_id}: caught ${fmtEnergy(caught)}` + (rev == null ? "" : `, earned ${fmtCompact(rev, "£")}`) +
-    ` · ${n("charge")} half hours charging, ${n("discharge")} discharging, ${n("hold")} holding`;
+  $("ap-day-sum").textContent = `${bat.battery_id}: stored ${fmtEnergy(caught)} of wasted wind` + (rev == null ? "" : `, earned ${fmtCompact(rev, "£")}`) +
+    ` · ${n("charge")} half hours storing, ${n("discharge")} selling, ${n("hold")} waiting`;
   strip.setAttribute("aria-label", `Actions through the day for ${bat.battery_id}`);
   steps.forEach((x, i) => {
     const time = hourFmt.format(new Date(x.period_start));

@@ -26,7 +26,7 @@
 <div id="map" aria-label="Map of Scottish wind farms"></div>
 <div id="map-legend" class="map-legend"></div>
 <div id="map-tip" class="tip" hidden></div>
-<div id="fake-banner" class="fake-banner" hidden>Fake data (app/fixtures): real numbers arrive with Person A's data release</div>
+<div id="fake-banner" class="fake-banner" hidden>Demo data: these are not real numbers</div>
 
 <aside id="panel" class="panel">
   <header class="panel-head">
@@ -44,6 +44,8 @@
 
   <!-- ===== Reveal ===== -->
   <section id="tab-reveal" class="tab" role="tabpanel">
+    <p class="tab-intro">When the cables south are full, Scottish wind farms are paid to switch off. Here is how much
+      power was thrown away, where, and what it cost.</p>
     <div class="filter-row">
       <div class="seg" role="group" aria-label="Time window">
         <button type="button" data-mode="all" aria-pressed="true">Whole period</button>
@@ -57,27 +59,27 @@
     </div>
 
     <div class="hero">
-      <div class="label">Wind switched off <span class="tag-est" title="Not published by anyone: rebuilt by us from the grid operator's turn-down instructions (Elexon bid acceptances)">estimated</span></div>
+      <div class="label">Wasted wind power <span class="tag-est" title="Wind power that farms could have generated but were paid to switch off, because the cables carrying it south were full. Nobody publishes this per farm: we rebuilt it from the grid operator's switch-off instructions.">our estimate</span></div>
       <div id="hero-value" class="hero-value">–</div>
       <div id="hero-sub" class="sub"></div>
     </div>
     <div class="tiles">
-      <div class="tile"><div class="label">Paid to switch off</div><div class="value" id="t-payments">–</div></div>
-      <div class="tile"><div class="label">Replacement gas</div><div class="value" id="t-gas">–</div></div>
-      <div class="tile"><div class="label">CO₂ from replacement</div><div class="value" id="t-co2">–</div></div>
-      <div class="tile"><div class="label">Homes it could power</div><div class="value" id="t-homes">–</div></div>
+      <div class="tile"><div class="label">Paid to farms to switch off</div><div class="value" id="t-payments">–</div></div>
+      <div class="tile"><div class="label">Gas burned to replace it</div><div class="value" id="t-gas">–</div></div>
+      <div class="tile"><div class="label">CO₂ from that gas</div><div class="value" id="t-co2">–</div></div>
+      <div class="tile"><div class="label">Homes it could have powered for a year</div><div class="value" id="t-homes">–</div></div>
     </div>
 
     <div class="block">
-      <h3>Which bottleneck <span class="tag-est">approximate</span></h3>
+      <h3>Which cable was full <span class="tag-est" title="Public data doesn't say which cable each switch-off was for, so this split is our best estimate">approximate</span></h3>
       <div id="boundary-bar" class="segbar" role="img"></div>
       <div id="boundary-legend" class="legend"></div>
       <p id="binding-note" class="note"></p>
     </div>
 
     <div class="block">
-      <h3>Farms, by energy switched off</h3>
-      <p class="note">Click a farm here or on the map.</p>
+      <h3>Wind farms, by power wasted</h3>
+      <p class="note">Click a farm here or on the map to see its day.</p>
       <div id="farm-bars" class="hbars"></div>
     </div>
 
@@ -89,7 +91,7 @@
       <div id="farm-sub" class="sub"></div>
       <div id="farm-legend" class="legend"></div>
       <div class="chart-box"><canvas id="farm-chart" aria-label="Planned and delivered output"></canvas></div>
-      <h4>Two independent estimates, daily</h4>
+      <h4>Checked two independent ways, per day</h4>
       <div id="ab-legend" class="legend"></div>
       <div class="chart-box short"><canvas id="ab-chart" aria-label="Method A and Method B daily totals"></canvas></div>
       <p id="ab-note" class="note"></p>
@@ -98,8 +100,9 @@
 
   <!-- ===== Predict ===== -->
   <section id="tab-predict" class="tab" role="tabpanel" hidden>
+    <p class="tab-intro">Our model predicts, the day before, how much wind will be wasted tomorrow, farm by farm.</p>
     <div class="hero">
-      <div class="label"><span id="pred-scope">Tomorrow, all farms</span> <span class="tag-est">forecast</span> <span id="pred-fake" class="tag fake" hidden>fake data</span></div>
+      <div class="label"><span id="pred-scope">Wind expected to be wasted tomorrow, all farms</span> <span class="tag-est">forecast</span> <span id="pred-fake" class="tag fake" hidden>fake data</span></div>
       <div id="pred-value" class="hero-value">–</div>
       <div id="pred-sub" class="sub"></div>
     </div>
@@ -107,91 +110,94 @@
     <div class="chart-box"><canvas id="tomorrow-chart" aria-label="Tomorrow's hourly forecast"></canvas></div>
 
     <div class="block">
-      <h3>Tomorrow by farm</h3>
+      <h3>Tomorrow, farm by farm</h3>
       <div class="table-wrap"><table id="pred-table" class="table"></table></div>
     </div>
 
     <div class="block">
-      <h3>Model vs baselines</h3>
-      <p class="note">Average error per farm-hour, walk-forward. Lower is better.</p>
+      <h3>How accurate is it?</h3>
+      <p class="note">Average miss per farm per hour, on past months the model never trained on, against simpler
+        ways of guessing. Shorter is better.</p>
       <div id="mae-bars" class="hbars"></div>
       <div class="table-wrap"><table id="metrics-table" class="table"></table></div>
       <p id="metrics-note" class="note"></p>
     </div>
 
     <div class="block">
-      <h3>Backtest: forecast vs what happened</h3>
+      <h3>Past forecasts vs what really happened</h3>
       <div id="bt-legend" class="legend"></div>
       <div class="chart-box"><canvas id="backtest-chart" aria-label="Backtest forecast against actual"></canvas></div>
     </div>
 
     <div class="block">
-      <h3>Which signals drive the forecast</h3>
-      <p class="note">Mean absolute SHAP value: how far each signal moves a prediction on average.</p>
+      <h3>What the forecast pays attention to</h3>
+      <p class="note">A longer bar means that input moves the prediction more, on average (mean |SHAP|).</p>
       <div id="shap-bars" class="hbars wide"></div>
     </div>
   </section>
 
   <section id="tab-simulate" class="tab" role="tabpanel" hidden>
+    <p class="tab-intro">What if Scotland had bigger cables, batteries or windier weather? Move the controls below;
+      the numbers compare your scenario with what really happened.</p>
     <!-- results first: they change as the levers below move -->
     <div class="hero">
-      <div class="label">Wind switched off in this scenario <span class="tag-est">simulated</span></div>
+      <div class="label">Wasted wind power in your scenario <span class="tag-est">simulated</span></div>
       <div id="sim-value" class="hero-value">–</div>
       <div id="sim-delta" class="delta"></div>
       <div id="sim-history" class="sub"></div>
     </div>
     <div class="tiles">
-      <div class="tile"><div class="label">Paid to switch off</div><div class="value" id="s-payments">–</div><div class="delta" id="s-payments-d"></div></div>
-      <div class="tile"><div class="label">Replacement gas</div><div class="value" id="s-gas">–</div><div class="delta" id="s-gas-d"></div></div>
-      <div class="tile"><div class="label">CO₂ from replacement</div><div class="value" id="s-co2">–</div><div class="delta" id="s-co2-d"></div></div>
-      <div class="tile"><div class="label">Homes it could power</div><div class="value" id="s-homes">–</div><div class="delta" id="s-homes-d"></div></div>
+      <div class="tile"><div class="label">Paid to farms to switch off</div><div class="value" id="s-payments">–</div><div class="delta" id="s-payments-d"></div></div>
+      <div class="tile"><div class="label">Gas burned to replace it</div><div class="value" id="s-gas">–</div><div class="delta" id="s-gas-d"></div></div>
+      <div class="tile"><div class="label">CO₂ from that gas</div><div class="value" id="s-co2">–</div><div class="delta" id="s-co2-d"></div></div>
+      <div class="tile"><div class="label">Homes it could have powered for a year</div><div class="value" id="s-homes">–</div><div class="delta" id="s-homes-d"></div></div>
     </div>
     <div id="sim-boundaries" class="block-tight"></div>
     <div id="sim-batteries-out" class="block-tight"></div>
 
     <div class="sim-actions">
-      <button type="button" id="sim-reset" class="btn-secondary">Reset to history</button>
+      <button type="button" id="sim-reset" class="btn-secondary">Reset to what really happened</button>
       <span id="sim-status" class="note"></span>
     </div>
 
     <!-- levers, grouped as in the brief -->
     <fieldset class="lever-group">
-      <legend>Grid</legend>
+      <legend>Cables</legend>
       <div class="lever" data-boundary="b4">
-        <label>B4 · North–South Scotland cable</label>
+        <label>B4 · the bottleneck inside Scotland (north → south)</label>
         <div class="seg" role="group" aria-label="B4 setting">
-          <button type="button" data-mode="historical" aria-pressed="true">History</button>
-          <button type="button" data-mode="offset" aria-pressed="false">Change by</button>
-          <button type="button" data-mode="fixed" aria-pressed="false">Fixed at</button>
+          <button type="button" data-mode="historical" aria-pressed="true">As it was</button>
+          <button type="button" data-mode="offset" aria-pressed="false">Bigger / smaller by</button>
+          <button type="button" data-mode="fixed" aria-pressed="false">Set to</button>
         </div>
         <div class="lever-row"><input type="range" aria-label="B4 MW" disabled><output></output></div>
       </div>
       <div class="lever" data-boundary="b6">
-        <label>B6 · Scotland–England cable</label>
+        <label>B6 · the Scotland → England border</label>
         <div class="seg" role="group" aria-label="B6 setting">
-          <button type="button" data-mode="historical" aria-pressed="true">History</button>
-          <button type="button" data-mode="offset" aria-pressed="false">Change by</button>
-          <button type="button" data-mode="fixed" aria-pressed="false">Fixed at</button>
+          <button type="button" data-mode="historical" aria-pressed="true">As it was</button>
+          <button type="button" data-mode="offset" aria-pressed="false">Bigger / smaller by</button>
+          <button type="button" data-mode="fixed" aria-pressed="false">Set to</button>
         </div>
         <div class="lever-row"><input type="range" aria-label="B6 MW" disabled><output></output></div>
       </div>
     </fieldset>
 
     <fieldset class="lever-group">
-      <legend>Storage</legend>
+      <legend>Batteries</legend>
       <div class="lever">
         <button type="button" id="place-battery" class="btn-secondary" aria-pressed="false">Place a battery on the map</button>
-        <p class="note" id="place-hint">Click anywhere in Scotland. North of B4 it can soak up B4 and B6 waste; south of it, only B6.</p>
+        <p class="note" id="place-hint">Click anywhere in Scotland. A battery north of B4 can store wind wasted at either bottleneck; one further south only at B6.</p>
         <div id="battery-list"></div>
       </div>
       <div class="lever">
-        <label>How batteries plan ahead</label>
+        <label>What batteries know about tomorrow</label>
         <div class="seg" id="forecast-quality" role="group" aria-label="Forecast quality">
           <button type="button" data-q="none" aria-pressed="false">No forecast</button>
           <button type="button" data-q="ours" aria-pressed="true">Our forecast</button>
-          <button type="button" data-q="perfect" aria-pressed="false">Perfect hindsight</button>
+          <button type="button" data-q="perfect" aria-pressed="false">Knows the future</button>
         </div>
-        <p class="note">The gap between these is what our forecast is worth. Our forecast covers only the backtest months; outside them a battery plans without one.</p>
+        <p class="note">The gap between these is what our forecast is worth. Our forecast only exists for the months we tested it on; outside them a battery plans without one.</p>
       </div>
     </fieldset>
 
@@ -200,7 +206,7 @@
       <div class="lever">
         <label for="wind-scale">Wind speed</label>
         <div class="lever-row"><input type="range" id="wind-scale" min="70" max="130" step="5" value="100"><output id="wind-scale-out">100%</output></div>
-        <p class="note">Scales wind speed, then output follows the power curve: it rises steeply, then flattens at full power.</p>
+        <p class="note">Makes every hour windier or calmer. Output follows the turbine power curve: it rises steeply, then levels off at full power.</p>
       </div>
     </fieldset>
 
@@ -216,19 +222,21 @@
         <div class="lever-row" id="window-custom" hidden>
           <input type="date" id="window-start" aria-label="Start date"> to <input type="date" id="window-end" aria-label="End date (exclusive)">
         </div>
-        <p class="note">The simulator always runs the whole period so batteries arrive realistically charged; results are cut to this window.</p>
+        <p class="note">Only changes which dates the numbers above cover.</p>
       </div>
     </fieldset>
 
     <div class="block">
-      <h3>Farms <span class="tag-est">indicative</span></h3>
-      <p class="note">Each half hour's waste is shared out the way it was historically, and cheapest bid first where history has none. Totals are firmer than any single farm.</p>
+      <h3>Wind farms <span class="tag-est">rough</span></h3>
+      <p class="note">Waste is shared between farms the way it was in reality, so totals are more reliable than any single farm.</p>
       <div class="table-wrap"><table id="sim-farms" class="table"></table></div>
     </div>
   </section>
   <section id="tab-autopilot" class="tab" role="tabpanel" hidden>
+    <p class="tab-intro">A battery next to the wind farms stores power that would be wasted and sells it later when the
+      cables have room. Our forecast tells it when to be empty and ready. Every result is replayed against what really happened.</p>
     <div class="hero">
-      <div class="label">What a forecast is worth to a battery <span class="tag-est">backtest</span></div>
+      <div class="label">Battery earnings with our forecast vs without one <span class="tag-est">past months</span></div>
       <div id="ap-headline" class="hero-value">–</div>
       <div id="ap-headline-sub" class="sub"></div>
     </div>
@@ -238,7 +246,7 @@
 
     <div class="block">
       <div class="detail-head">
-        <h3>The autopilot's day</h3>
+        <h3>One battery's day, half hour by half hour</h3>
         <span id="ap-badge" class="tag"></span>
       </div>
       <div class="filter-row">
@@ -246,13 +254,13 @@
         <input type="date" id="ap-date" aria-label="Day">
         <button type="button" id="ap-next" class="icon-btn" aria-label="Next day">›</button>
         <select id="ap-strategy" aria-label="Battery plans with">
-          <option value="forecast">Our forecast</option>
-          <option value="reactive">No forecast (reactive)</option>
-          <option value="perfect">Perfect hindsight</option>
+          <option value="forecast">Plans with our forecast</option>
+          <option value="reactive">No forecast</option>
+          <option value="perfect">Knows exactly what happens</option>
         </select>
         <select id="ap-planner" aria-label="Planner" hidden>
-          <option value="lp">Optimiser (LP) plans</option>
-          <option value="rule">Simple rules plan</option>
+          <option value="lp">Planned by the optimiser</option>
+          <option value="rule">Planned by simple rules</option>
         </select>
       </div>
       <div class="filter-row">
@@ -275,7 +283,7 @@
       <span id="method-version"></span></p>
 
     <div class="block">
-      <h3>Reveal: wind switched off <span class="tag-est">estimated</span></h3>
+      <h3>Reveal: wasted wind power <span class="tag-est">our estimate</span></h3>
       <p class="note">Nobody publishes waste per farm. We rebuild it two independent ways.</p>
       <ul class="method-list">
         <li><b>Method A (market):</b> each farm tells the grid what it plans to generate (its Physical Notification).
