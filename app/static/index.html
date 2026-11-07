@@ -15,17 +15,17 @@
 <div id="map-tip" class="tip" hidden></div>
 <div id="fake-banner" class="fake-banner" hidden>Demo data: these are not real numbers</div>
 
-<div id="loader" class="loader" role="status" aria-live="polite"><div class="turbine big"><svg viewBox="0 0 24 34" aria-hidden="true"><path class="tower" d="M11.2 10 L12.8 10 L13.6 33 L10.4 33 Z"/><g class="blades"><path d="M12 10 C11.2 6.5 11.4 3 12 0.6 C12.6 3 12.8 6.5 12 10 Z"/><path d="M12 10 C11.2 6.5 11.4 3 12 0.6 C12.6 3 12.8 6.5 12 10 Z" transform="rotate(120 12 10)"/><path d="M12 10 C11.2 6.5 11.4 3 12 0.6 C12.6 3 12.8 6.5 12 10 Z" transform="rotate(240 12 10)"/></g><circle class="hub" cx="12" cy="10" r="1.6"/></svg></div><span>Loading</span></div>
+<div id="loader" class="loader" role="status" aria-live="polite"><div class="turbine big"><svg viewBox="0 0 24 34" aria-hidden="true"><path class="tower" d="M10.7 10 L13.3 10 L15.4 32.6 L8.6 32.6 Z"/><rect class="tower" x="7" y="32" width="10" height="2" rx="1"/><rect class="nacelle" x="10.4" y="8.4" width="5.4" height="3.2" rx="1.3"/><g class="blades"><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z"/><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z" transform="rotate(120 12 10)"/><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z" transform="rotate(240 12 10)"/></g><circle class="hub" cx="12" cy="10" r="2"/></svg></div><span>Loading</span></div>
 <aside id="panel" class="panel">
   <header class="panel-head">
     <h1>Wasted Wind</h1>
     <span id="source-tag" class="tag"></span>
   </header>
   <nav class="tabs" role="tablist">
-    <button role="tab" data-tab="reveal" aria-selected="true">Reveal</button>
-    <button role="tab" data-tab="predict" aria-selected="false">Predict</button>
+    <button role="tab" data-tab="reveal" aria-selected="true">History</button>
+    <button role="tab" data-tab="predict" aria-selected="false">Forecast</button>
     <button role="tab" data-tab="simulate" aria-selected="false">Simulate</button>
-    <button role="tab" data-tab="autopilot" aria-selected="false">Autopilot</button>
+    <button role="tab" data-tab="autopilot" aria-selected="false">Batteries</button>
     <button role="tab" data-tab="method" aria-selected="false">Method</button>
   </nav>
   <div id="error" class="error" hidden></div>
@@ -340,7 +340,7 @@
       <span id="method-version"></span></p>
 
     <div class="block">
-      <h3>Reveal: wasted wind power <span class="tag-est">our estimate</span></h3>
+      <h3>History: wasted wind power <span class="tag-est">our estimate</span></h3>
       <p class="note">Nobody publishes waste per farm. We rebuild it two independent ways.</p>
       <ul class="method-list">
         <li><b>Method A (market):</b> each farm tells the grid what it plans to generate (its Physical Notification).
@@ -355,7 +355,7 @@
     </div>
 
     <div class="block">
-      <h3>Predict: tomorrow's waste <span class="tag-est">forecast</span></h3>
+      <h3>Forecast: tomorrow's waste <span class="tag-est">forecast</span></h3>
       <p id="method-validation" class="note"></p>
       <div class="table-wrap"><table id="method-models" class="table"></table></div>
       <p class="note">Error = mean absolute error per farm-hour (lower is better). Caught = share of real waste
@@ -374,7 +374,7 @@
     </div>
 
     <div class="block">
-      <h3>Autopilot: batteries</h3>
+      <h3>Batteries</h3>
       <p id="method-basis" class="note"></p>
       <ul id="method-caveats" class="method-list"></ul>
     </div>

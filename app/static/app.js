@@ -227,6 +227,7 @@ async function initMap() {
   // the panel floats over the right of the map: keep Scotland centred in the visible part
   const padMap = () => map.setPadding({ top: 0, bottom: 0, left: 0, right: window.innerWidth > 820 ? $("panel").offsetWidth + 24 : 0 });
   padMap(); window.addEventListener("resize", padMap);
+  map.on("zoom", syncMarkerScale); syncMarkerScale();
   await new Promise((res) => (map.loaded() ? res() : map.once("load", res)));
 
   map.addSource("boundaries", { type: "geojson", data: boundaryGeoJSON() });
@@ -240,7 +241,7 @@ async function initMap() {
              "circle-stroke-width": ["case", ["==", ["get", "farm_id"], ""], 3, 2],
              "circle-stroke-color": C.surface } });
   map.addLayer({ id: "farms-hit", type: "circle", source: "farms",   // bigger invisible hit target
-    paint: { "circle-radius": ["+", 8, ["get", "r"]], "circle-opacity": 0 } });
+    paint: { "circle-radius": zoomScaled(["+", 8, ["get", "r"]]), "circle-opacity": 0 } });
 
   const tip = $("map-tip");
   map.on("mousemove", "farms-hit", (e) => {
@@ -281,8 +282,24 @@ function drawBoundaryLabels() {
 
 // ---------- turbines: each farm is a turbine on its circle; on Reveal the blades turn at the share of
 // output the farm was allowed to make, so a farm that was mostly switched off barely moves ----------
-const TURBINE_SVG = '<svg viewBox="0 0 24 34" aria-hidden="true"><path class="tower" d="M11.2 10 L12.8 10 L13.6 33 L10.4 33 Z"/><g class="blades"><path d="M12 10 C11.2 6.5 11.4 3 12 0.6 C12.6 3 12.8 6.5 12 10 Z"/><path d="M12 10 C11.2 6.5 11.4 3 12 0.6 C12.6 3 12.8 6.5 12 10 Z" transform="rotate(120 12 10)"/><path d="M12 10 C11.2 6.5 11.4 3 12 0.6 C12.6 3 12.8 6.5 12 10 Z" transform="rotate(240 12 10)"/></g><circle class="hub" cx="12" cy="10" r="1.6"/></svg>';
+const TURBINE_SVG = '<svg viewBox="0 0 24 34" aria-hidden="true"><path class="tower" d="M10.7 10 L13.3 10 L15.4 32.6 L8.6 32.6 Z"/><rect class="tower" x="7" y="32" width="10" height="2" rx="1"/><rect class="nacelle" x="10.4" y="8.4" width="5.4" height="3.2" rx="1.3"/><g class="blades"><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z"/><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z" transform="rotate(120 12 10)"/><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z" transform="rotate(240 12 10)"/></g><circle class="hub" cx="12" cy="10" r="2"/></svg>';
 const turbineMarkers = new Map();
+const MIN_CIRCLE_R = 2.5, MAX_CIRCLE_R = 13.5;   // px at the default zoom; the biggest circle is no taller than a turbine
+
+// Marker size as the map zooms. Zooming out shrinks them with the map. Zooming in from the default view they grow
+// more slowly than the land does (so they get a little smaller relative to it), until zoom 9; past that they grow with
+// the land, keeping a fixed size on the ground, up to 12x so they never swamp the screen.
+const BASE_ZOOM = 5.6, SLOW_UNTIL = 9, SLOW_RATE = 0.45, MAX_SCALE = 12;
+function markerScale(z) {
+  if (z <= BASE_ZOOM) return Math.max(0.45, 2 ** (z - BASE_ZOOM));
+  const slow = 2 ** (SLOW_RATE * (Math.min(z, SLOW_UNTIL) - BASE_ZOOM));
+  return Math.min(MAX_SCALE, slow * 2 ** Math.max(0, z - SLOW_UNTIL));
+}
+function zoomScaled(radius) {   // MapLibre: zoom may only drive a top-level interpolate, so sample markerScale at stops
+  const stops = [3, 4.5, BASE_ZOOM, 7, 8, SLOW_UNTIL, 10, 11, 12, 22].flatMap((z) => [z, ["*", radius, markerScale(z)]]);
+  return ["interpolate", ["linear"], ["zoom"], ...stops];
+}
+function syncMarkerScale() { if (map) map.getContainer().style.setProperty("--tscale", markerScale(map.getZoom()).toFixed(3)); }
 function drawTurbines(byFarm, reveal) {
   for (const f of state.farms) {
     let m = turbineMarkers.get(f.farm_id);
@@ -315,10 +332,10 @@ function updateMap() {
     for (const f of (state.reveal && state.reveal.farms) || []) byFarm[f.farm_id] = { value: f.curtailed_mwh, share: f.share_wasted };
   }
   const maxV = Math.max(predict ? 50 : 1e-9, ...Object.values(byFarm).map((v) => v.value || 0));   // 50 MWh floor: tiny forecasts stay small
-  const R = 26;   // radius of the largest circle, px; area is proportional to the value
+  const R = MAX_CIRCLE_R - MIN_CIRCLE_R;   // area is proportional to the value
   const features = state.farms.map((f) => {
     const v = byFarm[f.farm_id] || { value: 0, share: 0 };
-    const r = 3 + R * Math.sqrt((v.value || 0) / maxV);
+    const r = MIN_CIRCLE_R + R * Math.sqrt((v.value || 0) / maxV);
     const tip = simulate
       ? `Your scenario: ${fmtEnergy(v.value)} wasted (really: ${fmtEnergy(v.base)}) · rough`
       : predict
@@ -330,7 +347,7 @@ function updateMap() {
   features.sort((a, b) => b.properties.r - a.properties.r);   // small circles drawn on top
   drawTurbines(byFarm, !predict && !simulate);
   map.getSource("farms").setData({ type: "FeatureCollection", features });
-  map.setPaintProperty("farms", "circle-radius", ["get", "r"]);
+  map.setPaintProperty("farms", "circle-radius", zoomScaled(["get", "r"]));
   map.setPaintProperty("farms", "circle-color", predict || simulate ? C.waste
     : ["interpolate", ["linear"], ["get", "share"], 0, C.rampZero, 0.1, "#f2a57a", 0.25, C.waste, 0.5, "#b8461a"]);
   map.setPaintProperty("farms", "circle-stroke-color",
@@ -343,13 +360,14 @@ function updateMap() {
 function drawMapLegend(predict, maxV, simulate = false) {
   const node = clear($("map-legend"));
   node.append(el("div", {}, simulate ? "Circle size: wind wasted in your scenario"
-    : predict ? "Circle size: wind expected to be wasted tomorrow" : "Circle size: wind power wasted"));
+    : predict ? "Circle size: wind expected to be wasted tomorrow" : "Circle size: wind power wasted"),
+    el("div", { class: "note", style: { margin: "0" } }, "Example sizes at the starting zoom"));
   if (!(maxV > 0.5)) {
     node.append(el("div", { class: "sub" }, predict && !simulate ? "No waste forecast for any farm" : "No wind wasted in this period"));
   } else {
   const sizes = el("div", { class: "sizes" });
   for (const frac of [0.1, 0.5, 1]) {
-    const d = 2 * (3 + 26 * Math.sqrt(frac));
+    const d = 2 * (MIN_CIRCLE_R + (MAX_CIRCLE_R - MIN_CIRCLE_R) * Math.sqrt(frac));
     sizes.append(el("span", {}, el("span", { class: "dot", style: { width: `${d}px`, height: `${d}px` } }), fmtEnergy(maxV * frac)));
   }
   node.append(sizes);
@@ -689,7 +707,7 @@ function renderPredict() {
   $("metrics-note").textContent = `An "event" is an hour where a farm wastes over ${m.event_threshold_mwh} MWh. "Warnings right" = how often a predicted event really happened; ` +
     `"events caught" = how many real events it saw coming. Tested ${m.validation}. Model ${m.model_version}.`;
 
-  hbars($("shap-bars"), (m.shap_top_signals || []).map((s) => ({ id: s.signal, label: s.signal.replace(/_/g, " "), value: s.mean_abs_shap })),
+  hbars($("shap-bars"), (m.shap_top_signals || []).map((s) => ({ id: s.signal, label: SIGNAL_NAMES[s.signal] || s.signal.replace(/_/g, " "), value: s.mean_abs_shap })),
     { color: C.planned, fmt: (v) => nf(2).format(v) });
 
   loadBacktest().catch(showError);
@@ -700,13 +718,17 @@ async function loadBacktest() {
   const q = id ? `?farm_id=${encodeURIComponent(id)}` : "";
   const bt = await api(`/api/forecast/backtest${q}`);
   if (state.farm !== id) return;
-  const s = bt.series;
+  // six months of hours is a smear: show daily totals (dailySums keys on period_start)
+  const daily = dailySums(bt.series.map((p) => ({ period_start: p.hour_start, actual_mwh: p.actual_mwh, pred_mwh: p.pred_mwh })),
+    ["actual_mwh", "pred_mwh"]);
+  const days = [...daily.keys()], s = [...daily.values()];
   legend($("bt-legend"), [{ label: "Really wasted", color: C.planned, kind: "line" },
     { label: "Our forecast, made the day before", color: C.waste, kind: "line" }]);
-  lineChart("backtest-chart", s.map((p) => shortFmt.format(new Date(p.hour_start))), [
+  const dm = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+  lineChart("backtest-chart", days.map((k) => dm.format(new Date(k))), [
     { label: "actual", data: s.map((p) => p.actual_mwh), borderColor: C.planned },
     { label: "forecast", data: s.map((p) => p.pred_mwh), borderColor: C.waste },
-  ], { yLabel: "MWh per hour" });
+  ], { yLabel: "MWh per day" });
 }
 
 // ---------- Simulate ----------
@@ -802,7 +824,7 @@ function renderSim() {
   const sameData = state.simPart1 && state.simPart1.meta.source === r.meta.source;
   const win = r.window.start ? `${dayFmt.format(new Date(r.window.start))} – ${dayFmt.format(new Date(new Date(r.window.end) - 1))}` : "";
   $("sim-history").textContent = `${win} · What really happened: ${fmtEnergy(b.curtailed_twh * 1e6)} wasted` +
-    (sameData && p1 ? ` (the Reveal tab says ${fmtEnergy(p1 * 1e6)}).` : ".");
+    (sameData && p1 ? ` (the History tab says ${fmtEnergy(p1 * 1e6)}).` : ".");
 
   const tiles = [["payments", "payments_gbp", (v) => fmtCompact(v, "£")], ["gas", "replacement_gas_gbp", (v) => fmtCompact(v, "£")],
     ["co2", "co2_t", (v) => `${fmtCompact(v)} t`], ["homes", "homes_equiv", (v) => fmtCompact(v)]];
@@ -1248,6 +1270,16 @@ async function loadMethod() {
     methodLoaded = true;
   } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
 }
+
+const SIGNAL_NAMES = {
+  pot_farm_mw: "This farm's expected output", pot_north_mw: "Expected wind output, north of B4",
+  pot_south_mw: "Expected wind output, south of B4", farm_code: "Which farm it is", capacity_mw: "Farm size",
+  wind_fc_ms: "Forecast wind speed", b4_limit_mw: "B4 capacity tomorrow", b6_limit_mw: "B6 capacity tomorrow",
+  b4_excess_potential_mw: "Expected overflow at B4", b6_excess_potential_mw: "Expected overflow at B6",
+  gb_demand_fc_mw: "Britain's forecast demand", lag48_mwh: "Waste at this hour 2 days ago",
+  trailing_waste_rate: "How often it was switched off lately", bid_median_gbp_mwh: "Its price to switch off",
+  hour: "Hour of day", weekday: "Day of week", month: "Month",
+};
 
 function renderMethodForecast(m) {
   noteSource("forecast metrics", m.meta);
