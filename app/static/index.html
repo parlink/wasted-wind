@@ -227,7 +227,44 @@
     </div>
   </section>
   <section id="tab-autopilot" class="tab" role="tabpanel" hidden>
-    <p class="placeholder">The battery autopilot arrives in issue #11.</p>
+    <div class="hero">
+      <div class="label">What a forecast is worth to a battery <span class="tag-est">backtest</span></div>
+      <div id="ap-headline" class="hero-value">–</div>
+      <div id="ap-headline-sub" class="sub"></div>
+    </div>
+    <div id="ap-ratio-bars" class="hbars"></div>
+    <div class="table-wrap"><table id="ap-scorecard" class="table"></table></div>
+    <p id="ap-score-note" class="note"></p>
+
+    <div class="block">
+      <div class="detail-head">
+        <h3>The autopilot's day</h3>
+        <span id="ap-badge" class="tag"></span>
+      </div>
+      <div class="filter-row">
+        <button type="button" id="ap-prev" class="icon-btn" aria-label="Previous day">‹</button>
+        <input type="date" id="ap-date" aria-label="Day">
+        <button type="button" id="ap-next" class="icon-btn" aria-label="Next day">›</button>
+        <select id="ap-strategy" aria-label="Battery plans with">
+          <option value="forecast">Our forecast</option>
+          <option value="reactive">No forecast (reactive)</option>
+          <option value="perfect">Perfect hindsight</option>
+        </select>
+      </div>
+      <div class="filter-row">
+        <select id="ap-battery" aria-label="Battery"></select>
+        <button type="button" id="ap-play" class="btn-secondary">▶ Replay the day</button>
+      </div>
+      <p id="ap-issued" class="note"></p>
+      <div id="ap-day-sum" class="sub"></div>
+      <div id="ap-legend" class="legend"></div>
+      <div id="ap-strip" class="action-strip" role="img"></div>
+      <div class="strip-axis"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
+      <h4>How full the battery is</h4>
+      <div class="chart-box short"><canvas id="ap-soc-chart" aria-label="State of charge through the day"></canvas></div>
+      <h4>Decision log</h4>
+      <div id="ap-log" class="decision-log" tabindex="0" aria-label="Decision log"></div>
+    </div>
   </section>
   <section id="tab-method" class="tab" role="tabpanel" hidden>
     <p class="placeholder">Calibration and data sources arrive with the simulator (#9).</p>

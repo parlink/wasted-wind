@@ -191,3 +191,17 @@ button.hbar { cursor: pointer; }
 .cmp-bars { display: flex; flex-direction: column; gap: 2px; }
 .cmp-bars span { display: block; height: 7px; border-radius: 0 3px 3px 0; min-width: 1px; }
 #map.placing { cursor: crosshair; }
+
+/* ---------- Autopilot tab ---------- */
+.action-strip { display: grid; grid-template-columns: repeat(48, 1fr); gap: 1px; height: 26px; margin: 6px 0 2px; }
+.action-strip span { border-radius: 2px; cursor: default; }
+.action-strip span.now { outline: 2px solid var(--ink); outline-offset: 0; }
+.strip-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.decision-log { max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
+.decision-log .row { display: grid; grid-template-columns: 44px 72px 1fr; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--grid); }
+.decision-log .row:last-child { border-bottom: 0; }
+.decision-log .row.now { background: #f0efec; }
+.decision-log .t { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.decision-log .a { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+.decision-log .a i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.tag.live { background: #e3f3e3; color: #0b4d0b; }

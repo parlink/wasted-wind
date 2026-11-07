@@ -818,6 +818,187 @@ async function loadSimulate() {
   if (!state.simResult) await runSim(); else { renderSim(); updateMap(); }
 }
 
+// ---------- Autopilot ----------
+
+const AP_COLORS = { charge: C.planned, discharge: C.waste, hold: C.grid };
+const STRATEGY_NAMES = { do_nothing: "Do nothing", reactive: "No forecast (reactive)", forecast: "Our forecast", perfect: "Perfect hindsight" };
+state.ap = { scorecard: null, day: null, date: null, strategy: "forecast", battery: null, step: -1, timer: null };
+let apInit = false;
+
+function apResults() {
+  const sc = state.ap.scorecard;
+  // the rule dispatcher for each strategy; "perfect" uses the optimiser's true ceiling once it exists
+  const out = Object.fromEntries(sc.results.filter((r) => r.dispatcher === "rule").map((r) => [r.strategy, r]));
+  const lp = sc.results.find((r) => r.strategy === "perfect" && r.dispatcher === "lp");
+  if (lp) out.perfect = lp;
+  return out;
+}
+
+function holdoutText(sc) {
+  const h = sc.holdout && sc.holdout.capture_ratio;
+  if (!h || h["forecast/rule"] == null || h["reactive/rule"] == null) return "";
+  return `On months the dispatcher was never tuned on (${sc.holdout.months.join(", ")}): ` +
+    `${fmtPct(h["forecast/rule"])} vs ${fmtPct(h["reactive/rule"])}.`;
+}
+
+function apLpCeiling() {
+  return state.ap.scorecard.results.some((r) => r.strategy === "perfect" && r.dispatcher === "lp");
+}
+
+function renderScorecard() {
+  const sc = state.ap.scorecard, res = apResults();
+  const f = res.forecast, r = res.reactive;
+  $("ap-headline").textContent = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
+  const period = sc.period ? `${dayFmt.format(new Date(sc.period.start))} – ${dayFmt.format(new Date(new Date(sc.period.end) - 1))}` : "";
+  $("ap-headline-sub").textContent = `Share of the hindsight battery's revenue earned with our forecast vs with no forecast, ` +
+    `${sc.batteries.length} batteries, ${period}. ` +
+    (apLpCeiling() ? `"Hindsight" = the best any schedule could have done, knowing exactly what happened.`
+      : `"Hindsight" = the same rules given perfect knowledge of the day.`) +
+    (holdoutText(sc) ? ` ${holdoutText(sc)}` : "");
+  const order = ["perfect", "forecast", "reactive", "do_nothing"].filter((k) => res[k]);
+  hbars($("ap-ratio-bars"), order.map((k) => ({ id: k, label: STRATEGY_NAMES[k], value: res[k].capture_ratio,
+    color: k === "forecast" ? C.planned : C.neutral })), { fmt: fmtPct });
+  const t = clear($("ap-scorecard"));
+  t.append(el("thead", {}, el("tr", {}, el("th", {}, "Battery plans with"), el("th", { class: "num" }, "Waste caught"),
+    el("th", { class: "num" }, "Revenue"), el("th", { class: "num" }, "Payments avoided"))));
+  const tb = el("tbody");
+  for (const k of order) {
+    const x = res[k];
+    tb.append(el("tr", {}, el("td", {}, STRATEGY_NAMES[k]), el("td", { class: "num" }, fmtEnergy(x.captured_curtailment_mwh)),
+      el("td", { class: "num" }, fmtCompact(x.revenue_gbp, "£")), el("td", { class: "num" }, fmtCompact(x.payments_avoided_gbp, "£"))));
+  }
+  t.append(tb);
+  $("ap-score-note").textContent = "Every battery is executed against what really happened: it can only catch real waste " +
+    "and only sell when the cable south has room. Batteries: " +
+    sc.batteries.map((b) => `${b.battery_id} (${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh)`).join(", ") + ".";
+}
+
+async function loadApDay() {
+  stopApReplay();
+  const tab = $("tab-autopilot");
+  tab.classList.add("loading");
+  try {
+    const q = new URLSearchParams({ strategy: state.ap.strategy });
+    if (state.ap.date) q.set("date", state.ap.date);
+    if (state.ap.battery) q.set("battery_id", state.ap.battery);
+    const day = await api(`/api/autopilot/schedule?${q}`);
+    state.ap.day = day;
+    noteSource("battery schedules", day.meta);
+    if (day.available) {
+      $("ap-date").min = day.available.first; $("ap-date").max = day.available.last;
+    }
+    if (day.date) { state.ap.date = day.date; $("ap-date").value = day.date; }
+    renderApDay();
+  } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
+}
+
+function renderApDay() {
+  const day = state.ap.day;
+  const bat = day.batteries[0];
+  const badge = $("ap-badge");
+  const issued = day.plan_issued_at ? new Date(day.plan_issued_at) : null;
+  const stale = day.live && issued && Date.now() - issued.getTime() > 36 * 3600 * 1000;
+  badge.textContent = day.live ? (stale ? "live · stale" : "live") : "replay of the backtest";
+  badge.className = "tag" + (day.live && !stale ? " live" : stale ? " stale" : "");
+  $("ap-issued").textContent = issued ? `Plan issued ${shortFmt.format(issued)} UTC, the day before, using only what was known then.` : "";
+  legend($("ap-legend"), [{ label: "Charge (soaking up waste)", color: AP_COLORS.charge },
+    { label: "Discharge (selling with cable room)", color: AP_COLORS.discharge }, { label: "Hold", color: AP_COLORS.hold }]);
+
+  const strip = clear($("ap-strip")), log = clear($("ap-log"));
+  if (!bat) {
+    $("ap-day-sum").textContent = "No schedule for this day.";
+    if (charts["ap-soc-chart"]) { charts["ap-soc-chart"].destroy(); delete charts["ap-soc-chart"]; }
+    return;
+  }
+  const steps = bat.steps;
+  const caught = steps.reduce((s, x) => s + (x.captured_curtailment_mwh || 0), 0);
+  const rev = steps.some((x) => x.revenue_gbp != null) ? steps.reduce((s, x) => s + (x.revenue_gbp || 0), 0) : null;
+  const n = (a) => steps.filter((x) => x.action === a).length;
+  $("ap-day-sum").textContent = `${bat.battery_id}: caught ${fmtEnergy(caught)}` + (rev == null ? "" : `, earned ${fmtCompact(rev, "£")}`) +
+    ` · ${n("charge")} half hours charging, ${n("discharge")} discharging, ${n("hold")} holding`;
+  strip.setAttribute("aria-label", `Actions through the day for ${bat.battery_id}`);
+  steps.forEach((x, i) => {
+    const time = hourFmt.format(new Date(x.period_start));
+    strip.append(el("span", { style: { background: AP_COLORS[x.action] || C.grid }, title: `${time} · ${x.action}: ${x.reason}`,
+      onmouseenter: () => highlightApStep(i, false) }));
+    log.append(el("div", { class: "row", "data-i": i },
+      el("span", { class: "t" }, time),
+      el("span", { class: "a" }, el("i", { style: { background: AP_COLORS[x.action] || C.grid } }), x.action),
+      el("span", {}, x.reason + (x.power_mw ? ` (${nf(0).format(x.power_mw)} MW)` : ""))));
+  });
+  const cap = (state.ap.scorecard.batteries.find((b) => b.battery_id === bat.battery_id) || {}).energy_mwh;
+  lineChart("ap-soc-chart", steps.map((x) => hourFmt.format(new Date(x.period_start))), [
+    { label: "stored", data: steps.map((x) => x.soc_mwh), borderColor: C.planned, fill: "origin", backgroundColor: "rgba(42,120,214,0.10)" },
+  ], { yLabel: "MWh stored" });
+  if (cap) { charts["ap-soc-chart"].options.scales.y.max = cap; charts["ap-soc-chart"].update(); }
+}
+
+function highlightApStep(i, scroll = true) {
+  state.ap.step = i;
+  document.querySelectorAll("#ap-strip span").forEach((s, j) => s.classList.toggle("now", j === i));
+  document.querySelectorAll("#ap-log .row").forEach((r) => r.classList.toggle("now", Number(r.dataset.i) === i));
+  const row = document.querySelector(`#ap-log .row[data-i="${i}"]`);
+  if (row && scroll) { const log = $("ap-log"); log.scrollTop = row.offsetTop - log.offsetTop - 40; }
+  const ch = charts["ap-soc-chart"];
+  if (ch && i >= 0) {
+    ch.setActiveElements([{ datasetIndex: 0, index: i }]);
+    ch.tooltip.setActiveElements([{ datasetIndex: 0, index: i }], { x: 0, y: 0 });
+    ch.update("none");
+  }
+}
+
+function stopApReplay() {
+  if (state.ap.timer) clearInterval(state.ap.timer);
+  state.ap.timer = null;
+  $("ap-play").textContent = "▶ Replay the day";
+}
+
+function toggleApReplay() {
+  if (state.ap.timer) return stopApReplay();
+  const steps = (state.ap.day && state.ap.day.batteries[0] && state.ap.day.batteries[0].steps) || [];
+  if (!steps.length) return;
+  let i = state.ap.step >= steps.length - 1 ? -1 : state.ap.step;
+  $("ap-play").textContent = "❚❚ Pause";
+  state.ap.timer = setInterval(() => {
+    i += 1;
+    if (i >= steps.length) return stopApReplay();
+    highlightApStep(i);
+  }, 350);
+}
+
+function shiftApDay(delta) {
+  if (!state.ap.date) return;
+  const d = new Date(`${state.ap.date}T00:00:00Z`);
+  const next = isoDay(new Date(d.getTime() + delta * 86400000));
+  const av = state.ap.day && state.ap.day.available;
+  if (av && (next < av.first || next > av.last)) return;
+  state.ap.date = next; loadApDay();
+}
+
+async function loadAutopilot() {
+  try {
+    if (!state.ap.scorecard) {
+      state.ap.scorecard = await api("/api/autopilot/scorecard");
+      noteSource("battery schedules", state.ap.scorecard.meta);
+    }
+    if (!apInit) {
+      apInit = true;
+      const sel = clear($("ap-battery"));
+      for (const b of state.ap.scorecard.batteries) sel.append(el("option", { value: b.battery_id },
+        `${b.battery_id} · ${b.zone === "north_scotland" ? "north of B4" : "between B4 and B6"} · ${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh`));
+      state.ap.battery = (state.ap.scorecard.batteries[0] || {}).battery_id || null;
+      sel.addEventListener("change", (e) => { state.ap.battery = e.target.value; loadApDay(); });
+      $("ap-strategy").addEventListener("change", (e) => { state.ap.strategy = e.target.value; loadApDay(); });
+      $("ap-date").addEventListener("change", (e) => { if (e.target.value) { state.ap.date = e.target.value; loadApDay(); } });
+      $("ap-prev").addEventListener("click", () => shiftApDay(-1));
+      $("ap-next").addEventListener("click", () => shiftApDay(1));
+      $("ap-play").addEventListener("click", toggleApReplay);
+    }
+    renderScorecard();
+    if (!state.ap.day) await loadApDay(); else renderApDay();
+  } catch (e) { showError(e); }
+}
+
 // ---------- tabs, intro, boot ----------
 
 function setTab(tab) {
@@ -826,9 +1007,11 @@ function setTab(tab) {
   document.querySelectorAll(".tab").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
   if (tab !== "reveal") stopPlay();
   if (tab !== "simulate") setPlacing(false);
+  if (tab !== "autopilot" && state.ap) stopApReplay();
   drawBatteryMarkers();
   if (tab === "predict") loadPredict(); else if (tab === "reveal") { renderReveal(); updateMap(); loadFarmDetail().catch(showError); }
   else if (tab === "simulate") loadSimulate();
+  else if (tab === "autopilot") { loadAutopilot(); updateMap(); }
   else updateMap();
 }
 

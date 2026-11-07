@@ -258,18 +258,22 @@ def autopilot_schedule(date: Optional[str] = None, battery_id: Optional[str] = N
             raise HTTPException(404, f"unknown battery_id {battery_id!r}")
         s = s[s["battery_id"] == battery_id]
     if s.empty:
-        return {"plan_issued_at": None, "live": False, "batteries": [], "meta": meta(src)}
+        return {"plan_issued_at": None, "live": False, "batteries": [], "available": None, "meta": meta(src)}
+    available = {"first": s["period_start"].min().strftime("%Y-%m-%d"),
+                 "last": s["period_start"].max().strftime("%Y-%m-%d")}
     day = parse_ts(date, "date").normalize() if date else s["period_start"].max().normalize()
     s = s[(s["period_start"] >= day) & (s["period_start"] < day + pd.Timedelta(days=1))]
     # live mode re-plans: for each half hour keep the newest plan
     s = s.sort_values("plan_issued_at").drop_duplicates(["battery_id", "period_start"], keep="last")
     today = pd.Timestamp.now(tz="UTC").normalize()
     out = [{"battery_id": bid,
-            "steps": records(g.sort_values("period_start")[["period_start", "action", "power_mw", "soc_mwh", "reason"]])}
+            "steps": records(g.sort_values("period_start")[["period_start", "action", "power_mw", "soc_mwh", "reason",
+                                                             "captured_curtailment_mwh", "revenue_gbp"]])}
            for bid, g in s.groupby("battery_id", sort=True)]
     return {"plan_issued_at": iso(s["plan_issued_at"].max()) if len(s) else None,
             "live": bool(day >= today), "date": day.strftime("%Y-%m-%d"),
-            "strategy": strategy, "dispatcher": dispatcher, "batteries": out, "meta": meta(src)}
+            "strategy": strategy, "dispatcher": dispatcher, "batteries": out, "available": available,
+            "meta": meta(src)}
 
 
 @app.get("/api/autopilot/scorecard")
