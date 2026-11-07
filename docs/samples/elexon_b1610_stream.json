@@ -1,0 +1,38 @@
+{
+ "_request": "https://data.elexon.co.uk/bmrs/api/v1/datasets/B1610/stream?from=2025-03-01T05%3A00Z&to=2025-03-01T06%3A00Z&bmUnit=T_SGRWO-1",
+ "response": [
+  {
+   "dataset": "B1610",
+   "psrType": "Generation",
+   "bmUnit": "T_SGRWO-1",
+   "nationalGridBmUnitId": "SGRWO-1",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 11,
+   "halfHourEndTime": "2025-03-01T05:30:00",
+   "settlementRunType": "RF",
+   "quantity": -1.62
+  },
+  {
+   "dataset": "B1610",
+   "psrType": "Generation",
+   "bmUnit": "T_SGRWO-1",
+   "nationalGridBmUnitId": "SGRWO-1",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 12,
+   "halfHourEndTime": "2025-03-01T06:00:00",
+   "settlementRunType": "RF",
+   "quantity": -1.619
+  },
+  {
+   "dataset": "B1610",
+   "psrType": "Generation",
+   "bmUnit": "T_SGRWO-1",
+   "nationalGridBmUnitId": "SGRWO-1",
+   "settlementDate": "2025-03-01",
+   "settlementPeriod": 13,
+   "halfHourEndTime": "2025-03-01T06:30:00",
+   "settlementRunType": "RF",
+   "quantity": -1.608
+  }
+ ]
+}

@@ -1,0 +1,52 @@
+{
+ "_request": "https://archive-api.open-meteo.com/v1/archive?latitude=56.58&longitude=-1.76&start_date=2025-03-01&end_date=2025-03-01&hourly=wind_speed_100m%2Cwind_direction_100m%2Ctemperature_2m&wind_speed_unit=ms&timezone=GMT",
+ "response": {
+  "latitude": 56.55536,
+  "longitude": -1.6875,
+  "generationtime_ms": 0.28073787689208984,
+  "utc_offset_seconds": 0,
+  "timezone": "GMT",
+  "timezone_abbreviation": "GMT",
+  "elevation": 0.0,
+  "hourly_units": {
+   "time": "iso8601",
+   "wind_speed_100m": "m/s",
+   "wind_direction_100m": "\u00b0",
+   "temperature_2m": "\u00b0C"
+  },
+  "hourly": {
+   "time": [
+    "2025-03-01T00:00",
+    "2025-03-01T01:00",
+    "2025-03-01T02:00",
+    "2025-03-01T03:00",
+    "2025-03-01T04:00",
+    "2025-03-01T05:00"
+   ],
+   "wind_speed_100m": [
+    10.36,
+    11.92,
+    13.27,
+    11.75,
+    12.16,
+    12.21
+   ],
+   "wind_direction_100m": [
+    212,
+    216,
+    216,
+    211,
+    210,
+    215
+   ],
+   "temperature_2m": [
+    6.3,
+    6.2,
+    6.2,
+    6.4,
+    6.2,
+    6.4
+   ]
+  }
+ }
+}
