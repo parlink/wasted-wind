@@ -147,3 +147,49 @@ def test_zone_potential_uses_the_farm_list_not_who_reported():
     z = ft.zone_potential(weather, farms, commissioned)
     assert z.loc[h, "north_scotland"] == pytest.approx(100.0)   # b not built yet
     assert z.loc[h, "south_scotland"] == pytest.approx(50.0)
+
+
+# ---------- #14: uncertainty band and live refresh ----------
+
+from pipeline import live_forecast as lf  # noqa: E402
+
+
+def _fc(split, issued, n=2):
+    return pd.DataFrame({c: [np.nan] * n for c in tr.FC_COLS}).assign(
+        farm_id="x", split=split, issued_at=pd.Timestamp(issued),
+        hour_start=pd.date_range("2026-11-08T00:00Z", periods=n, freq="h"))
+
+
+def test_replace_live_keeps_backtest_and_swaps_live_rows():
+    old = pd.concat([_fc("backtest", "2026-10-01T10:00Z"), _fc("live", "2026-11-06T19:00Z")])
+    new = _fc("live", "2026-11-07T20:00Z")
+    out = lf.replace_live(old, new)
+    assert (out.split == "backtest").sum() == 2
+    assert set(out[out.split == "live"].issued_at) == {pd.Timestamp("2026-11-07T20:00Z")}
+
+
+def test_refresh_offline_keeps_cached_forecast(tmp_path):
+    path = tmp_path / "forecast.parquet"
+    cached = pd.concat([_fc("backtest", "2026-10-01T10:00Z"), _fc("live", "2026-11-06T19:00Z")])
+    cached.to_parquet(path, index=False)
+
+    def offline(now):
+        raise ConnectionError("no network")
+    assert lf.refresh(build_live=offline, forecast_path=path) is False
+    after = pd.read_parquet(path)
+    assert set(after[after.split == "live"].issued_at) == {pd.Timestamp("2026-11-06T19:00Z")}
+
+
+def test_band_is_ordered_and_non_negative():
+    lo, hi = tr.order_band(np.array([5.0, -1.0, 3.0]), np.array([2.0, 4.0, 9.0]))
+    assert (lo <= hi).all() and (lo >= 0).all()
+    assert lo.tolist() == [2.0, 0.0, 3.0] and hi.tolist() == [5.0, 4.0, 9.0]
+
+
+@pytest.mark.skipif(not FC.exists(), reason="forecast.parquet not built")
+def test_built_band_matches_contract():
+    fc = pd.read_parquet(FC)
+    assert fc.curtailed_mwh_p10.notna().all() and fc.curtailed_mwh_p90.notna().all()
+    assert (fc.curtailed_mwh_p10 <= fc.curtailed_mwh_p90 + 1e-9).all() and (fc.curtailed_mwh_p10 >= 0).all()
+    m = json.loads(METRICS.read_text())
+    assert 0.5 < m["interval"]["coverage_p10_p90"] < 0.99

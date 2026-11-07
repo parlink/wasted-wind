@@ -9,7 +9,11 @@ Never shuffled. LightGBM settings and the Tweedie power were fixed up front (com
 not tuned on the test months.
 
 The model is biased low (~18% on the backtest): typical of Tweedie on a heavy-tailed target.
-Calibration and quantile bands are the Full-tier follow-up (#14).
+
+Uncertainty band (#14): two LightGBM quantile models (alpha 0.1 and 0.9), fitted walk-forward
+like the point model, give curtailed_mwh_p10 / p90; their empirical coverage on the backtest is
+reported in model_metrics.json -> interval. The fitted models are saved to data/processed/models/
+so pipeline.live_forecast can refresh "tomorrow" hourly without retraining.
 
 Ablation: the same model without the four NESO-limit signals, because NESO's day-ahead file has
 no publication time (see features.py); reported under "ablations" in model_metrics.json.
@@ -46,6 +50,8 @@ FC_COLS = ["farm_id", "zone", "hour_start", "issued_at", "split", "curtailed_mwh
            "model_version"]
 LIMIT_FEATURES = ["b4_limit_mw", "b6_limit_mw", "b4_excess_potential_mw", "b6_excess_potential_mw"]
 NO_LIMIT_FEATURES = [f for f in ft.FEATURES if f not in LIMIT_FEATURES]
+QUANTILES = {"curtailed_mwh_p10": 0.1, "curtailed_mwh_p90": 0.9}
+MODEL_DIR = ft.PROCESSED / "models"
 MODEL_NAMES = {"lightgbm": "curtailed_mwh_pred", "persistence": "baseline_persistence_mwh",
                "climatology": "baseline_climatology_mwh", "wind_rule": "baseline_wind_rule_mwh"}
 
@@ -101,6 +107,34 @@ def _fit(train: pd.DataFrame, features=ft.FEATURES) -> lgb.LGBMRegressor:
     return model
 
 
+def _fit_quantile(train: pd.DataFrame, alpha: float) -> lgb.LGBMRegressor:
+    params = {k: v for k, v in LGB_PARAMS.items() if k not in ("objective", "tweedie_variance_power")}
+    model = lgb.LGBMRegressor(objective="quantile", alpha=alpha, **params)
+    model.fit(train[ft.FEATURES], train.curtailed_mwh, categorical_feature=["farm_code"])
+    return model
+
+
+def fit_all(train: pd.DataFrame) -> dict:
+    """Point (Tweedie) and quantile models on the same training rows."""
+    return {"curtailed_mwh_pred": _fit(train),
+            **{col: _fit_quantile(train, a) for col, a in QUANTILES.items()}}
+
+
+def order_band(p10: np.ndarray, p90: np.ndarray):
+    """Separately fitted quantiles can cross; return a non-negative, ordered (low, high)."""
+    lo, hi = np.clip(p10, 0, None), np.clip(p90, 0, None)
+    return np.minimum(lo, hi), np.maximum(lo, hi)
+
+
+def predict_all(models: dict, rows: pd.DataFrame) -> pd.DataFrame:
+    rows = rows.copy()
+    X = rows[ft.FEATURES]
+    rows["curtailed_mwh_pred"] = np.clip(models["curtailed_mwh_pred"].predict(X), 0, None)
+    rows["curtailed_mwh_p10"], rows["curtailed_mwh_p90"] = order_band(
+        models["curtailed_mwh_p10"].predict(X), models["curtailed_mwh_p90"].predict(X))
+    return rows
+
+
 def train_mask(hour_start: pd.Series, month: pd.Timestamp) -> pd.Series:
     """Training rows for a test month: hours before the day before the month starts."""
     return hour_start < month - pd.Timedelta(days=1)
@@ -136,8 +170,9 @@ def run_fold(panel: pd.DataFrame, month: pd.Timestamp):
     nxt = month + pd.offsets.MonthBegin(1)
     train = panel[train_mask(panel.hour_start, month)]
     test = panel[(panel.hour_start >= month) & (panel.hour_start < nxt)].copy()
-    model = _fit(train)
-    test["curtailed_mwh_pred"] = np.clip(model.predict(test[ft.FEATURES]), 0, None)
+    models = fit_all(train)
+    model = models["curtailed_mwh_pred"]
+    test = predict_all(models, test)
     ablation = _fit(train, NO_LIMIT_FEATURES)
     test["pred_no_limits"] = np.clip(ablation.predict(test[NO_LIMIT_FEATURES]), 0, None)
     test.attrs["shap"] = shap_values(model, test[ft.FEATURES])     # out-of-sample, this fold
@@ -195,7 +230,7 @@ def _live_limits(neso_wide: pd.DataFrame, day: pd.Timestamp) -> pd.DataFrame:
     return pd.concat([lim[lim.index < day], have])
 
 
-def live_rows(model, baselines: dict, curt: pd.DataFrame, now: pd.Timestamp) -> pd.DataFrame:
+def live_rows(models: dict, baselines: dict, curt: pd.DataFrame, now: pd.Timestamp) -> pd.DataFrame:
     weather, lim, dem_h = live_inputs(now)
     farms = pd.read_csv(ft.ROOT / "reference" / "farms.csv")
     day = (now + pd.Timedelta(days=1)).normalize()
@@ -206,10 +241,34 @@ def live_rows(model, baselines: dict, curt: pd.DataFrame, now: pd.Timestamp) -> 
     zone_pot = ft.zone_potential(weather, farms, ft.commissioning(curt))
     rows = ft.add_signals(p, curt, ft.hourly_target(curt), farms, lim, dem_h, zone_pot)
     ft.check_no_leakage(rows)
-    rows["curtailed_mwh_pred"] = np.clip(model.predict(rows[ft.FEATURES]), 0, None)
+    rows = predict_all(models, rows)
     rows = apply_baselines(rows, baselines)
     rows["curtailed_mwh_actual"] = np.nan
     return rows
+
+
+def interval_stats(bt: pd.DataFrame) -> dict:
+    """Empirical coverage of the p10-p90 band, overall and on hours that really had waste.
+
+    Most farm-hours have no waste, and a 0-0 band "covers" them trivially, so the overall figure
+    flatters the band; the waste-hours figure is the honest one.
+    """
+    a, lo, hi = bt.curtailed_mwh_actual, bt.curtailed_mwh_p10, bt.curtailed_mwh_p90
+    inside, waste = (a >= lo) & (a <= hi), a > 0
+    return {"nominal": 0.8,
+            "coverage_p10_p90": round(float(inside.mean()), 3),
+            "coverage_on_waste_hours": round(float(inside[waste].mean()), 3),
+            "above_p90_on_waste_hours": round(float((a > hi)[waste].mean()), 3),
+            "below_p10_on_waste_hours": round(float((a < lo)[waste].mean()), 3),
+            "mean_width_mwh": round(float((hi - lo).mean()), 2)}
+
+
+def save_models(models: dict, baselines: dict) -> None:
+    """Persist the final models and baselines for pipeline.live_forecast."""
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    for col, m in models.items():
+        m.booster_.save_model(str(MODEL_DIR / f"{col}.txt"))
+    pd.to_pickle(baselines, MODEL_DIR / "baselines.pkl")
 
 
 def shap_values(model: lgb.LGBMRegressor, X: pd.DataFrame) -> pd.Series:
@@ -243,19 +302,18 @@ def main():
     bt = pd.concat(folds, ignore_index=True)
     bt["split"], bt["model_version"] = "backtest", version
     bt["curtailed_mwh_actual"] = bt.curtailed_mwh
-    bt["curtailed_mwh_p10"] = bt["curtailed_mwh_p90"] = np.nan   # quantile models are Full tier
     fc = bt[FC_COLS]
 
     # Live: tomorrow, from a model fitted on everything. Network problems keep the backtest.
     try:
         now = pd.Timestamp.now(tz="UTC").floor("min")
-        final, base = _fit(panel), fit_baselines(panel)
+        final, base = fit_all(panel), fit_baselines(panel)
+        save_models(final, base)
         curt = pd.read_parquet(ft.PROCESSED / "curtailment.parquet",
                                columns=["farm_id", "zone", "period_start", "curtailed_mwh_a",
                                         "bid_price_gbp_mwh"])
         live = live_rows(final, base, curt, now)
         live["split"], live["model_version"] = "live", version
-        live["curtailed_mwh_p10"] = live["curtailed_mwh_p90"] = np.nan
         fc = pd.concat([fc, live[FC_COLS]], ignore_index=True)
         log.info("live: %d farm-hours for %s, issued %s, total %.0f MWh", len(live),
                  f"{live.hour_start.min():%Y-%m-%d}", now, live.curtailed_mwh_pred.sum())
@@ -273,9 +331,12 @@ def main():
            "ablations": {"lightgbm_without_neso_limits": {
                k: round(v, 3) for k, v in score(bt.curtailed_mwh_actual, bt.pred_no_limits,
                                                 bt.hour_start).items()}},
+           "interval": interval_stats(bt),
            "shap_top_signals": shap_top(shaps),
            "notes": ["SHAP: mean |SHAP| on each fold's held-out month, averaged over folds",
-                     "lightgbm is biased low (~18% on the backtest); calibration is Full tier (#14)",
+                     "lightgbm is biased low (~18% on the backtest); the p10-p90 band is fitted separately",
+                     "interval: coverage is 0.8 nominal; on hours with waste it is lower, and the misses "
+                     "are almost all above p90 (storms are under-forecast, like the point model)",
                      "NESO day-ahead limits are assumed known by D-1 10:00 (no publication time in "
                      "the file); see ablations for the model without them"]}
     (ft.PROCESSED / "model_metrics.json").write_text(json.dumps(out, indent=2))
