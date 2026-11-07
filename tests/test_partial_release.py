@@ -81,3 +81,26 @@ def _restore_env():
         os.environ.pop("WW_DATA_SOURCE", None)
     else:
         os.environ["WW_DATA_SOURCE"] = old
+
+
+def test_non_constraint_turn_down_creates_no_simulated_waste(real_curtailment_only):
+    """A farm turned down for ordinary balancing (not a constraint) delivers less, so the residual
+    (built from delivered wind, as pipeline/residual.py does) rises by the same MW. The simulator's
+    potential must use delivered + constraint waste, or that turn-down becomes invented waste."""
+    proc = real_curtailment_only
+    c = pd.read_parquet(proc / "curtailment.parquet")
+    r = pd.read_parquet(data.FIXTURES_DIR / "residual.parquet")
+    r["period_start"] = r["period_start"] + pd.Timedelta(days=364)
+    binding = r[(r.zone == "north_scotland") & (r.residual_method == "binding")].period_start
+    t = binding.iloc[len(binding) // 2]
+    unit = c[(c.zone == "north_scotland") & (c.period_start == t)].sort_values("accepted_mwh").index[-1]
+    c.loc[unit, "accepted_mwh"] -= 30.0                       # 30 MWh non-SO balancing turn-down
+    c.to_parquet(proc / "curtailment.parquet", index=False)
+    row = (r.zone == "north_scotland") & (r.period_start == t)
+    r.loc[row, "residual_mw"] += 30.0 * 2                     # residual = flow - delivered (MW)
+    r.loc[row, "wind_delivered_mwh"] -= 30.0
+    r.to_parquet(proc / "residual.parquet", index=False)
+
+    from sim.calibrate import calibration_report
+    rep = calibration_report()
+    assert rep["historical_twh"] == pytest.approx(rep["simulated_twh"], rel=1e-9, abs=1e-12)

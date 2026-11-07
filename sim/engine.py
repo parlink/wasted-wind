@@ -66,7 +66,7 @@ class Inputs:
     farm: np.ndarray              # (U,) farm_id
     north: np.ndarray             # (U,) bool, unit is north of B4
     cap_mw: np.ndarray            # (U,)
-    planned_mw: np.ndarray        # (T, U) potential output, MW (planned_mwh / 0.5)
+    planned_mw: np.ndarray        # (T, U) potential output, MW: (accepted_mwh + curtailed_mwh_a) / 0.5
     wind_ms: np.ndarray           # (T, U) actual 100 m wind, NaN if unknown
     bid_gbp_mwh: np.ndarray       # (T, U) price used for payments (period bid, else unit median)
     hist_curtailed_mwh: np.ndarray  # (T, U) Part 1 Method A, for calibration
@@ -128,7 +128,12 @@ def _load(signature: tuple, source: str) -> Inputs:
     units = units.sort_values("med_bid", ascending=False, na_position="last")
     bmus = units["bmu_id"].tolist()
 
-    planned = np.nan_to_num(_wide(curt, "planned_mwh", periods, bmus)) / H
+    # Potential = what the unit would have delivered without *constraint* actions:
+    # delivered (accepted) + constraint waste. Not planned (PN): ordinary balancing turn-downs and
+    # offers change delivery too, and residual.parquet is built from delivered wind, so using PN
+    # would turn every non-constraint turn-down into simulated waste.
+    planned = (np.nan_to_num(_wide(curt, "accepted_mwh", periods, bmus))
+               + np.nan_to_num(_wide(curt, "curtailed_mwh_a", periods, bmus))) / H
     hist = np.nan_to_num(_wide(curt, "curtailed_mwh_a", periods, bmus))
     bid = _wide(curt, "bid_price_gbp_mwh", periods, bmus)
     fallback = units["med_bid"].fillna(med.median() if med.notna().any() else -50.0).to_numpy()
