@@ -31,6 +31,20 @@ except ImportError:
     from sim.dispatch_stub import plan_day
     DISPATCHER = "sim.dispatch_stub (stand-in until #6)"
 
+try:   # Person A's optimising dispatcher (#13); same signature, used for batteries with "dispatcher": "lp"
+    from dispatch.optimiser import plan_day as lp_plan_day
+    LP_DISPATCHER = "dispatch.optimiser"
+except ImportError:
+    lp_plan_day, LP_DISPATCHER = None, None
+
+
+def planner_for(battery: dict):
+    """(plan_day function, module name) for a scenario battery. Falls back to the rule dispatcher
+    when the LP isn't available, and says so in the result."""
+    if battery.get("dispatcher") == "lp" and lp_plan_day is not None:
+        return lp_plan_day, LP_DISPATCHER
+    return plan_day, DISPATCHER
+
 H = 0.5   # hours per settlement period: MW x H = MWh
 
 DEFAULTS = {
@@ -286,7 +300,7 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
     res_n, res_s = inp.res_n, inp.res_s
     for d in range(days):
         sl = slice(d * 48, d * 48 + 48)
-        day_plans = [plan_day(b, p["sig"][sl], price_exp[d], p["head"][sl], p["soc"]) for b, p in zip(bats, plans)]
+        day_plans = [planner_for(b)[0](b, p["sig"][sl], price_exp[d], p["head"][sl], p["soc"]) for b, p in zip(bats, plans)]
         for i in range(d * 48, d * 48 + 48):
             j = i - d * 48
             # charging from would-be waste: North batteries first (B4 and B6 waste), then South
@@ -436,6 +450,7 @@ def simulate(scenario: dict) -> dict:
         "farms": [{"farm_id": f, "curtailed_mwh": round(float(sf[f]), 3), "baseline_curtailed_mwh": round(float(bf[f]), 3)}
                   for f in bf.sort_values(ascending=False).index],
         "dispatcher": DISPATCHER if sc["batteries"] else None,
+        "dispatchers": {b["battery_id"]: planner_for(b)[1] for b in sc["batteries"]},
         "data_source": input_source(),
         "input_quality": {"gaps": inp.data_gaps, "dropped_bmus": inp.dropped_bmus,
                           "dropped_curtailed_mwh": round(inp.dropped_curtailed_mwh, 1)},

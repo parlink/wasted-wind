@@ -218,3 +218,24 @@ def test_allocation_never_exceeds_output_and_conserves_excess():
     out = allocate(pot, ex, hist)
     assert (out <= pot + 1e-9).all() and (out >= -1e-12).all()
     np.testing.assert_allclose(out.sum(axis=1), ex, rtol=1e-9, atol=1e-9)
+
+
+# ---------- LP dispatcher per battery (#13 / #34) ----------
+
+def test_lp_battery_is_planned_by_the_lp(monkeypatch):
+    calls = []
+
+    def fake_lp(battery, curtailment_mwh, price, headroom, soc):
+        calls.append(battery["battery_id"])
+        return engine.plan_day(battery, curtailment_mwh, price, headroom, soc)
+    monkeypatch.setattr(engine, "lp_plan_day", fake_lp)
+    monkeypatch.setattr(engine, "LP_DISPATCHER", "fake.lp")
+    lp = {**BATTERY, "battery_id": "lp1", "dispatcher": "lp"}
+    out = engine.simulate({"batteries": [BATTERY, lp]})
+    assert calls and set(calls) == {"lp1"}
+    assert out["dispatchers"] == {"b1": engine.DISPATCHER, "lp1": "fake.lp"}
+
+
+def test_lp_battery_falls_back_to_rules_when_lp_missing(monkeypatch):
+    monkeypatch.setattr(engine, "lp_plan_day", None)
+    assert engine.planner_for({**BATTERY, "dispatcher": "lp"}) == (engine.plan_day, engine.DISPATCHER)

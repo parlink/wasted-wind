@@ -224,3 +224,24 @@ def test_perfect_beats_ours_beats_do_nothing_every_month():
     assert (m["perfect_lp"] >= m["forecast_rule"] - 1e-6).all(), m
     assert (m["perfect_lp"] >= m["reactive_rule"] - 1e-6).all(), m
     assert (m["forecast_rule"] >= m["do_nothing_rule"] - 1e-6).all(), m
+
+
+
+def test_scorecard_rebuild_keeps_live_rows():
+    # Review #34 point 9: rebuilding the backtest must not wipe dispatch.live's plans.
+    end = pd.Timestamp("2026-11-01T00:00Z")
+    old = pd.DataFrame({c: [None, None] for c in SCHED_COLS}).assign(
+        period_start=[pd.Timestamp("2026-10-31T23:30Z"), pd.Timestamp("2026-11-07T20:30Z")])
+    new = pd.DataFrame({c: [None] for c in SCHED_COLS}).assign(period_start=[pd.Timestamp("2026-10-31T23:30Z")])
+    out = sc.keep_live_rows(old, new, end)
+    assert sorted(out.period_start) == [pd.Timestamp("2026-10-31T23:30Z"), pd.Timestamp("2026-11-07T20:30Z")]
+
+
+@pytest.mark.skipif(not SCHED.exists(), reason="schedules.parquet not built")
+def test_lp_ceiling_beats_every_replay_over_the_period():
+    s = pd.read_parquet(SCHED, columns=["strategy", "dispatcher", "period_start", "revenue_gbp"])
+    end = s.loc[(s.strategy == "perfect") & (s.dispatcher == "lp"), "period_start"].max()
+    s = s[s.period_start <= end]                                     # backtest only
+    tot = s.groupby(s.strategy + "/" + s.dispatcher).revenue_gbp.sum()
+    for k in ("reactive/rule", "forecast/rule", "reactive/lp", "forecast/lp", "perfect/rule"):
+        assert tot["perfect/lp"] >= tot[k] - 1e-6, k

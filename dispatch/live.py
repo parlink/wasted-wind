@@ -21,8 +21,9 @@ For each battery (dispatch.scorecard.BATTERIES), with the LP dispatcher and our 
 
 Offline / any fetch failure: nothing is written; the last plan stays, and its plan_issued_at
 shows how old it is (the dashboard labels it stale). The battery is virtual, so its "current"
-SoC is what executing our own plans against real waste gives; captured / revenue columns of
-future (planned) rows are 0 until those half hours have happened.
+SoC is what executing our own plans against real waste gives, saved in live_state.json. Live rows
+are PLANS: their captured / revenue columns stay 0, and a "discharge" row can be sale intent at a
+planned SoC of 0 (sold only if the battery has charge by then). Executed SoC lives in the state.
 """
 from __future__ import annotations
 
@@ -85,17 +86,22 @@ def plan_rows(battery: dict, now: pd.Timestamp, periods: pd.DatetimeIndex, soc_n
 
 
 def replan(batteries, inputs: dict, sched: pd.DataFrame, state: dict, now: pd.Timestamp):
-    """One re-plan for every battery. inputs[battery_id] = dict of arrays (see gather_inputs)."""
-    # Complete half hours so far are executed; the one in progress finishes under the previous
-    # plan; re-planning starts at the next half-hour boundary (so plan_issued_at < period_start).
+    """One re-plan for every battery. inputs[battery_id] = dict from gather_inputs.
+
+    `*_so_far` arrays cover the complete half hours from inputs["start"] (the oldest saved
+    `as_of`, possibly yesterday) to now; `*_rest` arrays cover the re-planned half hours.
+    """
+    # Complete half hours since the last run are executed (across midnight too); the one in
+    # progress finishes under the previous plan; re-planning starts at the next half-hour boundary
+    # (so plan_issued_at < period_start). After 23:30 there is nothing left today to re-plan.
     now_hh = now.floor("30min")
     today = now.normalize()
-    elapsed = pd.date_range(today, now_hh, freq="30min", inclusive="left")
     start = now.ceil("30min") if now > now_hh else now_hh + pd.Timedelta(minutes=30)
     remaining = pd.date_range(start, today + pd.Timedelta(days=1), freq="30min", inclusive="left")
     new_rows, new_state = [], {}
     for b in batteries:
         x = inputs[b["battery_id"]]
+        elapsed = pd.date_range(x["start"], now_hh, freq="30min", inclusive="left")
         st = state.get(b["battery_id"], {})
         since = pd.Timestamp(st["as_of"]) if st.get("as_of") else today
         soc = float(st.get("soc_mwh", 0.0))
@@ -111,24 +117,46 @@ def replan(batteries, inputs: dict, sched: pd.DataFrame, state: dict, now: pd.Ti
     return pd.concat(new_rows, ignore_index=True), new_state
 
 
-def refresh(gather: Callable[[pd.Timestamp], dict] | None = None, schedules_path: Path = SCHEDULES,
+def _atomic_write(path: Path, write) -> None:
+    tmp = path.with_suffix(".tmp")
+    try:
+        write(tmp)
+        tmp.replace(path)                     # atomic, so readers never see half a file
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def refresh(gather: Callable[..., dict] | None = None, schedules_path: Path = SCHEDULES,
             state_path: Path = STATE, now: pd.Timestamp | None = None, batteries=None) -> bool:
-    """One live re-plan. Returns True if new plans were appended, False if the last plan was kept."""
+    """One live re-plan. Returns True if new plans were appended, False if the last plan was kept.
+
+    Never raises: a fetch or re-plan error, or a failed write (e.g. Windows refusing to replace a
+    file another process has open), keeps the last plan and SoC; the next run tries again. The
+    state file is only written after the schedule, and both are written atomically.
+    """
     now = now or pd.Timestamp.now(tz="UTC").floor("min")
     batteries = batteries or sc.BATTERIES
     try:
-        inputs = (gather or gather_inputs)(now)
-    except Exception as e:  # noqa: BLE001 - offline / API trouble: keep the last plan
-        log.warning("live re-plan failed (%s); keeping the last plan", e)
+        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        since = min((pd.Timestamp(v["as_of"]) for v in state.values() if v.get("as_of")),
+                    default=now.normalize())
+        inputs = (gather or gather_inputs)(now, since)
+        sched = pd.read_parquet(schedules_path)
+        rows, new_state = replan(batteries, inputs, sched, state, now)
+    except (OSError, RuntimeError) as e:
+        log.warning("live re-plan: offline or API error (%s: %s); keeping the last plan", type(e).__name__, e)
         return False
-    sched = pd.read_parquet(schedules_path)
-    state = json.loads(state_path.read_text()) if state_path.exists() else {}
-    rows, new_state = replan(batteries, inputs, sched, state, now)
+    except Exception:  # noqa: BLE001 - a real bug: log it loudly, but keep the loop and the last plan
+        log.exception("live re-plan: unexpected error; keeping the last plan")
+        return False
     out = pd.concat([sched, rows], ignore_index=True)[sc.COLUMNS]
-    tmp = schedules_path.with_suffix(".tmp")
-    out.to_parquet(tmp, index=False)
-    tmp.replace(schedules_path)
-    state_path.write_text(json.dumps(new_state, indent=1))
+    try:
+        _atomic_write(schedules_path, lambda t: out.to_parquet(t, index=False))
+        _atomic_write(state_path, lambda t: t.write_text(json.dumps(new_state, indent=1)))
+    except OSError as e:
+        log.warning("live re-plan: could not write (%s: %s); keeping the last plan, retry next time",
+                    type(e).__name__, e)
+        return False
     for b in batteries:
         r = rows[rows.battery_id == b["battery_id"]]
         log.info("%s: SoC %.0f MWh, %d half hours re-planned, next: %s", b["battery_id"],
@@ -138,34 +166,40 @@ def refresh(gather: Callable[[pd.Timestamp], dict] | None = None, schedules_path
 
 # ---------- network ----------
 
-def gather_inputs(now: pd.Timestamp) -> dict:
-    """Everything replan needs, per battery, for today. Raises on any network problem."""
+def gather_inputs(now: pd.Timestamp, since: pd.Timestamp | None = None) -> dict:
+    """Everything replan needs, per battery. Raises on any network problem.
+
+    `since` (the oldest saved as_of) may be yesterday: then yesterday's last half hours are fetched
+    too, so the first run after midnight executes them. Elexon's streams return records that
+    overlap the window, so acceptances issued before `start` that still apply are included.
+    """
     from pipeline import fetch, live_forecast as lf, reconstruct as rc, residual as rs, train as tr
     today = now.normalize()
     now_hh = now.floor("30min")
-    n_min = int((now_hh - today) / pd.Timedelta(minutes=1))
+    start = min(since or today, today).floor("30min")
+    n_min = int((now_hh - start) / pd.Timedelta(minutes=1))
     farms = pd.read_csv(sc.ROOT / "reference" / "farms.csv")
-    window = [("from", f"{today:%Y-%m-%dT%H:%MZ}"), ("to", f"{now:%Y-%m-%dT%H:%MZ}")]
+    window = [("from", f"{start:%Y-%m-%dT%H:%MZ}"), ("to", f"{now:%Y-%m-%dT%H:%MZ}")]
 
-    # 3. forecast for today from the newest weather run (saved models)
+    # forecast for today from the newest weather run (saved models)
     models, base = lf.load_models()
     curt = pd.read_parquet(sc.PROCESSED / "curtailment.parquet", columns=lf.CURT_COLS)
     fc = tr.live_rows(models, base, curt, now, day=today).set_index(["farm_id", "hour_start"]).curtailed_mwh_pred
 
-    # prices: today so far (MID), and the same half hour over the last 7 complete days
-    mid = fetch.records_to_frame(fetch.get_json(f"{fetch.BASE}/datasets/MID/stream", dict(window)))
-    price_now = rs.market_price(mid) if len(mid) else pd.Series(dtype=float)
-    res = pd.read_parquet(sc.PROCESSED / "residual.parquet", columns=["zone", "period_start",
-                                                                         "market_price_gbp_mwh"])
-    hist = res[res.zone == "north_scotland"].set_index("period_start").market_price_gbp_mwh
-    hist = hist[hist.index < today].iloc[-7 * 48:]
+    # prices: fetched live for the last 8 days (no dependence on how old residual.parquet is);
+    # expected = same half hour over the 7 complete days before today
+    week = {"from": f"{today - pd.Timedelta(days=8):%Y-%m-%dT%H:%MZ}", "to": f"{now:%Y-%m-%dT%H:%MZ}"}
+    price = rs.market_price(fetch.records_to_frame(fetch.get_json(f"{fetch.BASE}/datasets/MID/stream", week)))
+    hist = price[(price.index >= today - pd.Timedelta(days=7)) & (price.index < today)]
+    if len(hist) < 48:
+        raise RuntimeError(f"only {len(hist)} market prices in the last 7 days")
     exp_price = hist.groupby(hist.index.strftime("%H:%M")).mean()
 
-    # headroom: NESO day-ahead limit minus its (capped) flow, for today
+    # headroom: NESO day-ahead limit minus its (capped) flow
     fetch.fetch_neso()
     neso = rs.boundary_series(rs.parse_neso(pd.read_csv(fetch.RAW_ROOT / "neso" / "day_ahead_constraints.csv",
                                                         encoding="utf-8-sig")))
-    periods = pd.date_range(today, periods=48, freq="30min")
+    periods = pd.date_range(start, today + pd.Timedelta(days=1), freq="30min", inclusive="left")
     nb = neso.reindex(periods).ffill().bfill()
     room4 = nb.b4_limit_mw - nb.b4_flow_mw.clip(upper=nb.b4_limit_mw)
     room6 = nb.b6_limit_mw - nb.b6_flow_mw.clip(upper=nb.b6_limit_mw)
@@ -174,8 +208,8 @@ def gather_inputs(now: pd.Timestamp) -> dict:
 
     elapsed = periods[periods < now_hh]
     k = len(elapsed)
-    start = now.ceil("30min") if now > now_hh else now_hh + pd.Timedelta(minutes=30)
-    k_rest = int((start - today) / pd.Timedelta(minutes=30))       # first re-planned half hour
+    rest_from = now.ceil("30min") if now > now_hh else now_hh + pd.Timedelta(minutes=30)
+    k_rest = int(periods.searchsorted(rest_from))
     out = {}
     for b in sc.BATTERIES:
         bmus = farms.loc[farms.farm_id == b["farm_id"], "bmu_id"].tolist()
@@ -187,7 +221,7 @@ def gather_inputs(now: pd.Timestamp) -> dict:
             p_u = pn[pn.bmUnit == u] if len(pn) else pn
             a_u = boa[boa.bmUnit == u] if len(boa) else boa
             if len(p_u) and n_min:
-                m = rc.method_a(p_u, a_u, today, n_min).set_index("period_start").curtailed_mwh_a
+                m = rc.method_a(p_u, a_u, start, n_min).set_index("period_start").curtailed_mwh_a
                 waste += m.reindex(elapsed).fillna(0.0).to_numpy()
         f = fc.loc[b["farm_id"]] if b["farm_id"] in fc.index.get_level_values(0) else pd.Series(dtype=float)
         half = (pd.concat([f, f.set_axis(f.index + pd.Timedelta(minutes=30))]) / 2).reindex(periods).fillna(0.0)
@@ -195,8 +229,9 @@ def gather_inputs(now: pd.Timestamp) -> dict:
         head[:k] = np.where(waste > 0, 0.0, head[:k])         # no room while it was being curtailed
         typical = pd.Series(exp_price.reindex(elapsed.strftime("%H:%M")).to_numpy(), index=elapsed)
         out[b["battery_id"]] = {
+            "start": start,
             "waste_so_far": waste,
-            "price_so_far": price_now.reindex(elapsed).fillna(typical).to_numpy(),
+            "price_so_far": price.reindex(elapsed).fillna(typical).to_numpy(),
             "head_so_far": head[:k],
             "fc_rest": half.to_numpy()[k_rest:],
             "price_rest": exp_price.reindex(periods[k_rest:].strftime("%H:%M")).to_numpy(),

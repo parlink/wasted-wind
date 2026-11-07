@@ -195,6 +195,12 @@ def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: 
     return df[COLUMNS]
 
 
+def keep_live_rows(existing: pd.DataFrame, new: pd.DataFrame, backtest_end: pd.Timestamp) -> pd.DataFrame:
+    """New backtest rows plus any live re-plans (dispatch.live) beyond the backtest window."""
+    live = existing[existing.period_start >= backtest_end]
+    return pd.concat([new, live], ignore_index=True)[COLUMNS]
+
+
 def lp_rows(battery: dict, hist, price, head_zone, f) -> pd.DataFrame:
     """perfect/lp rows: the hindsight optimum over the whole replay period."""
     sl = slice(PRE_DAYS * 48, None)
@@ -237,7 +243,10 @@ def main():
                for b in bats for s in ("reactive", "forecast")]
     frames += [lp_rows(b, hist, price, head[b["zone"]], farm[b["battery_id"]]) for b in bats]
     sched = pd.concat(frames, ignore_index=True)
-    sched.to_parquet(PROCESSED / "schedules.parquet", index=False)
+    path = PROCESSED / "schedules.parquet"
+    backtest_end = periods[-1] + pd.Timedelta(minutes=30)
+    full = keep_live_rows(pd.read_parquet(path), sched, backtest_end) if path.exists() else sched
+    full.to_parquet(path, index=False)
 
     sched["key"] = sched.strategy + "/" + sched.dispatcher
     avoided = {}
