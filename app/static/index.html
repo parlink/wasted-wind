@@ -133,7 +133,98 @@
   </section>
 
   <section id="tab-simulate" class="tab" role="tabpanel" hidden>
-    <p class="placeholder">The simulator and its levers arrive in issue #10.</p>
+    <!-- results first: they change as the levers below move -->
+    <div class="hero">
+      <div class="label">Wind switched off in this scenario <span class="tag-est">simulated</span></div>
+      <div id="sim-value" class="hero-value">–</div>
+      <div id="sim-delta" class="delta"></div>
+      <div id="sim-history" class="sub"></div>
+    </div>
+    <div class="tiles">
+      <div class="tile"><div class="label">Paid to switch off</div><div class="value" id="s-payments">–</div><div class="delta" id="s-payments-d"></div></div>
+      <div class="tile"><div class="label">Replacement gas</div><div class="value" id="s-gas">–</div><div class="delta" id="s-gas-d"></div></div>
+      <div class="tile"><div class="label">CO₂ from replacement</div><div class="value" id="s-co2">–</div><div class="delta" id="s-co2-d"></div></div>
+      <div class="tile"><div class="label">Homes it could power</div><div class="value" id="s-homes">–</div><div class="delta" id="s-homes-d"></div></div>
+    </div>
+    <div id="sim-boundaries" class="block-tight"></div>
+    <div id="sim-batteries-out" class="block-tight"></div>
+
+    <div class="sim-actions">
+      <button type="button" id="sim-reset" class="btn-secondary">Reset to history</button>
+      <span id="sim-status" class="note"></span>
+    </div>
+
+    <!-- levers, grouped as in the brief -->
+    <fieldset class="lever-group">
+      <legend>Grid</legend>
+      <div class="lever" data-boundary="b4">
+        <label>B4 · North–South Scotland cable</label>
+        <div class="seg" role="group" aria-label="B4 setting">
+          <button type="button" data-mode="historical" aria-pressed="true">History</button>
+          <button type="button" data-mode="offset" aria-pressed="false">Change by</button>
+          <button type="button" data-mode="fixed" aria-pressed="false">Fixed at</button>
+        </div>
+        <div class="lever-row"><input type="range" aria-label="B4 MW" disabled><output></output></div>
+      </div>
+      <div class="lever" data-boundary="b6">
+        <label>B6 · Scotland–England cable</label>
+        <div class="seg" role="group" aria-label="B6 setting">
+          <button type="button" data-mode="historical" aria-pressed="true">History</button>
+          <button type="button" data-mode="offset" aria-pressed="false">Change by</button>
+          <button type="button" data-mode="fixed" aria-pressed="false">Fixed at</button>
+        </div>
+        <div class="lever-row"><input type="range" aria-label="B6 MW" disabled><output></output></div>
+      </div>
+    </fieldset>
+
+    <fieldset class="lever-group">
+      <legend>Storage</legend>
+      <div class="lever">
+        <button type="button" id="place-battery" class="btn-secondary" aria-pressed="false">Place a battery on the map</button>
+        <p class="note" id="place-hint">Click anywhere in Scotland. North of B4 it can soak up B4 and B6 waste; south of it, only B6.</p>
+        <div id="battery-list"></div>
+      </div>
+      <div class="lever">
+        <label>How batteries plan ahead</label>
+        <div class="seg" id="forecast-quality" role="group" aria-label="Forecast quality">
+          <button type="button" data-q="none" aria-pressed="false">No forecast</button>
+          <button type="button" data-q="ours" aria-pressed="true">Our forecast</button>
+          <button type="button" data-q="perfect" aria-pressed="false">Perfect hindsight</button>
+        </div>
+        <p class="note">The gap between these is what our forecast is worth. Our forecast covers only the backtest months; outside them a battery plans without one.</p>
+      </div>
+    </fieldset>
+
+    <fieldset class="lever-group">
+      <legend>Weather</legend>
+      <div class="lever">
+        <label for="wind-scale">Wind speed</label>
+        <div class="lever-row"><input type="range" id="wind-scale" min="70" max="130" step="5" value="100"><output id="wind-scale-out">100%</output></div>
+        <p class="note">Scales wind speed, then output follows the power curve: it rises steeply, then flattens at full power.</p>
+      </div>
+    </fieldset>
+
+    <fieldset class="lever-group">
+      <legend>Time window</legend>
+      <div class="lever">
+        <select id="window-preset" aria-label="Time window">
+          <option value="all">Whole period</option>
+          <option value="y2025">2025</option>
+          <option value="last30">Last 30 days of data</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <div class="lever-row" id="window-custom" hidden>
+          <input type="date" id="window-start" aria-label="Start date"> to <input type="date" id="window-end" aria-label="End date (exclusive)">
+        </div>
+        <p class="note">The simulator always runs the whole period so batteries arrive realistically charged; results are cut to this window.</p>
+      </div>
+    </fieldset>
+
+    <div class="block">
+      <h3>Farms <span class="tag-est">indicative</span></h3>
+      <p class="note">Each half hour's waste is shared out the way it was historically, and cheapest bid first where history has none. Totals are firmer than any single farm.</p>
+      <div class="table-wrap"><table id="sim-farms" class="table"></table></div>
+    </div>
   </section>
   <section id="tab-autopilot" class="tab" role="tabpanel" hidden>
     <p class="placeholder">The battery autopilot arrives in issue #11.</p>

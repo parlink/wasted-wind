@@ -162,3 +162,32 @@ button.hbar { cursor: pointer; }
   .fake-banner { max-width: calc(100vw - 24px); }
   .hbar { grid-template-columns: 96px 1fr auto; }
 }
+
+/* ---------- Simulate tab ---------- */
+.delta { font-size: 12px; color: var(--ink-2); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.delta.good { color: #006300; }
+.delta.bad { color: #8a1f1f; }
+.block-tight { margin: 8px 0; }
+.sim-actions { display: flex; align-items: center; gap: 10px; margin: 12px 0 4px; flex-wrap: wrap; }
+.btn-secondary {
+  border: 1px solid var(--axis); background: var(--surface); border-radius: 6px; padding: 6px 12px; cursor: pointer;
+}
+.btn-secondary[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+.lever-group { border: 0; border-top: 1px solid var(--grid); margin: 14px 0 0; padding: 10px 0 0; }
+.lever-group legend { font-weight: 600; font-size: 14px; padding: 0 6px 0 0; }
+.lever { margin: 8px 0 12px; }
+.lever > label { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
+.lever-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.lever-row input[type="range"] { flex: 1; min-width: 140px; accent-color: var(--ink); }
+.lever-row output { min-width: 84px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
+.battery { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 8px; margin: 6px 0; font-size: 12px; }
+.battery .fields { display: flex; gap: 8px; flex-wrap: wrap; }
+.battery input { width: 72px; font: inherit; }
+.battery .remove { background: none; border: 0; cursor: pointer; color: var(--ink-2); font-size: 16px; }
+.battery-marker { width: 16px; height: 16px; border-radius: 3px; background: var(--planned); border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.25); }
+.cmp-row { display: grid; grid-template-columns: 34px 1fr 90px; gap: 6px; align-items: center; font-size: 12px; margin: 3px 0; }
+.cmp-bars { display: flex; flex-direction: column; gap: 2px; }
+.cmp-bars span { display: block; height: 7px; border-radius: 0 3px 3px 0; min-width: 1px; }
+#map.placing { cursor: crosshair; }

@@ -207,7 +207,8 @@ async function initMap() {
     tip.style.top = `${e.originalEvent.clientY + 12}px`;
   });
   map.on("mouseleave", "farms-hit", () => { map.getCanvas().style.cursor = ""; tip.hidden = true; });
-  map.on("click", "farms-hit", (e) => selectFarm(e.features[0].properties.farm_id));
+  map.on("click", (e) => { if (onMapClickPlace(e)) e.preventDefault(); });
+  map.on("click", "farms-hit", (e) => { if (!state.placing) selectFarm(e.features[0].properties.farm_id); });
 }
 
 function boundaryGeoJSON() {
@@ -237,8 +238,11 @@ function updateMap() {
   map.getSource("boundaries").setData(boundaryGeoJSON());
   drawBoundaryLabels();
   const predict = state.tab === "predict";
+  const simulate = state.tab === "simulate" && state.simResult;
   const byFarm = {};
-  if (predict) {
+  if (simulate) {
+    for (const f of state.simResult.farms) byFarm[f.farm_id] = { value: f.curtailed_mwh, base: f.baseline_curtailed_mwh };
+  } else if (predict) {
     for (const f of (state.tomorrow && state.tomorrow.farms) || [])
       byFarm[f.farm_id] = { value: f.hours.reduce((s, h) => s + (h.pred_mwh || 0), 0) };
   } else {
@@ -249,7 +253,9 @@ function updateMap() {
   const features = state.farms.map((f) => {
     const v = byFarm[f.farm_id] || { value: 0, share: 0 };
     const r = 3 + R * Math.sqrt((v.value || 0) / maxV);
-    const tip = predict
+    const tip = simulate
+      ? `Scenario: ${fmtEnergy(v.value)} (history ${fmtEnergy(v.base)}) · indicative`
+      : predict
       ? `Forecast tomorrow: ${fmtEnergy(v.value)}`
       : `Switched off: ${fmtEnergy(v.value)} (${fmtPct(v.share)} of planned output)`;
     return { type: "Feature", geometry: { type: "Point", coordinates: [f.lon, f.lat] },
@@ -258,18 +264,19 @@ function updateMap() {
   features.sort((a, b) => b.properties.r - a.properties.r);   // small circles drawn on top
   map.getSource("farms").setData({ type: "FeatureCollection", features });
   map.setPaintProperty("farms", "circle-radius", ["get", "r"]);
-  map.setPaintProperty("farms", "circle-color", predict ? C.waste
+  map.setPaintProperty("farms", "circle-color", predict || simulate ? C.waste
     : ["interpolate", ["linear"], ["get", "share"], 0, C.rampZero, 0.1, "#f2a57a", 0.25, C.waste, 0.5, "#b8461a"]);
   map.setPaintProperty("farms", "circle-stroke-color",
     ["case", ["==", ["get", "farm_id"], state.farm || ""], C.ink, C.surface]);
   map.setPaintProperty("farms", "circle-stroke-width",
     ["case", ["==", ["get", "farm_id"], state.farm || ""], 2.5, 2]);
-  drawMapLegend(predict, maxV);
+  drawMapLegend(predict || simulate, maxV, simulate);
 }
 
-function drawMapLegend(predict, maxV) {
+function drawMapLegend(predict, maxV, simulate = false) {
   const node = clear($("map-legend"));
-  node.append(el("div", {}, predict ? "Circle area: forecast waste tomorrow" : "Circle area: energy switched off"));
+  node.append(el("div", {}, simulate ? "Circle area: waste in this scenario (indicative)"
+    : predict ? "Circle area: forecast waste tomorrow" : "Circle area: energy switched off"));
   const sizes = el("div", { class: "sizes" });
   for (const frac of [0.1, 0.5, 1]) {
     const d = 2 * (3 + 26 * Math.sqrt(frac));
@@ -415,7 +422,7 @@ function selectFarm(id) {
     renderReveal();
     loadFarmDetail().catch(showError);
     if (state.farm) $("farm-detail").scrollIntoView({ behavior: "smooth", block: "start" });
-  } else {
+  } else if (state.tab === "predict" && state.tomorrow) {
     renderPredict();
   }
 }
@@ -424,7 +431,7 @@ function selectFarm(id) {
 
 function setMode(mode) {
   state.mode = mode;
-  document.querySelectorAll(".seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+  document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
   $("day-slider").disabled = mode !== "day";
   loadReveal();
 }
@@ -545,6 +552,272 @@ async function loadBacktest() {
   ], { yLabel: "MWh per hour" });
 }
 
+// ---------- Simulate ----------
+
+const SIM_DEFAULT = () => ({
+  b4: { mode: "historical", mw: 0 }, b6: { mode: "historical", mw: 0 },
+  batteries: [], wind: 100, quality: "ours", preset: "all", start: "", end: "",
+});
+state.sim = SIM_DEFAULT();
+state.simResult = null;
+state.simPart1 = null;
+state.placing = false;
+let simTimer = null, simSeq = 0, simInit = false, batteryN = 0;
+const batteryMarkers = [];
+const RANGES = { offset: { min: -3000, max: 10000, step: 100, val: 0 }, fixed: { min: 0, max: 15000, step: 100, val: 3000 } };
+
+function simWindow() {
+  const s = state.sim;
+  if (s.preset === "y2025") return { start: "2025-01-01", end: "2026-01-01" };
+  if (s.preset === "last30" && state.days.length) {
+    const end = new Date(state.days[state.days.length - 1].getTime() + 86400000);
+    return { start: isoDay(new Date(end.getTime() - 30 * 86400000)), end: isoDay(end) };
+  }
+  if (s.preset === "custom") return { start: s.start || null, end: s.end || null };
+  return { start: null, end: null };
+}
+
+function simRequest() {
+  const s = state.sim;
+  return {
+    b4: { mode: s.b4.mode, mw: s.b4.mw }, b6: { mode: s.b6.mode, mw: s.b6.mw },
+    batteries: s.batteries.map(({ battery_id, lat, lon, zone, power_mw, energy_mwh, efficiency }) =>
+      ({ battery_id, lat, lon, zone, power_mw, energy_mwh, efficiency, dispatcher: "rule" })),
+    weather: { wind_scale: s.wind / 100 }, window: simWindow(), forecast_quality: s.quality,
+  };
+}
+
+function scheduleSim() {   // sliders wait 300 ms after the last move
+  clearTimeout(simTimer);
+  simTimer = setTimeout(runSim, 300);
+}
+
+async function runSim() {
+  const seq = ++simSeq;
+  const tab = $("tab-simulate");
+  tab.classList.add("loading");
+  try {
+    const body = simRequest();
+    const w = body.window;
+    const q = w.start || w.end ? `?${new URLSearchParams(Object.entries(w).filter(([, v]) => v))}` : "";
+    const [r, part1] = await Promise.all([
+      fetch("/api/scenario", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        .then((x) => (x.ok ? x.json() : x.text().then((t) => { throw new Error(`/api/scenario: ${t.slice(0, 200)}`); }))),
+      api(`/api/reveal/summary${q}`),
+    ]);
+    if (seq !== simSeq) return;          // a newer request is on its way
+    state.simResult = r; state.simPart1 = part1;
+    noteSource("simulator", r.meta);
+    renderSim();
+    updateMap();
+  } catch (e) { showError(e); } finally { if (seq === simSeq) tab.classList.remove("loading"); }
+}
+
+function deltaText(node, d, base, fmt, lowerIsGood = true) {
+  node.className = "delta";
+  if (d == null || Math.abs(d) < 1e-12) { node.textContent = "same as history"; return; }
+  const pct = base ? ` (${d > 0 ? "+" : "−"}${nf(0).format(Math.abs(d / base) * 100)}%)` : "";
+  node.textContent = `${d > 0 ? "+" : "−"}${fmt(Math.abs(d))} vs history${pct}`;
+  node.classList.add((d < 0) === lowerIsGood ? "good" : "bad");
+}
+
+function renderSim() {
+  const r = state.simResult, s = r.scenario, b = r.baseline, d = r.delta;
+  $("sim-value").textContent = fmtEnergy(s.curtailed_twh * 1e6);
+  deltaText($("sim-delta"), d.curtailed_twh * 1e6, b.curtailed_twh * 1e6, fmtEnergy);
+  const p1 = state.simPart1 && state.simPart1.totals.curtailed_twh;
+  const sameData = state.simPart1 && state.simPart1.meta.source === r.meta.source;
+  const win = r.window.start ? `${dayFmt.format(new Date(r.window.start))} – ${dayFmt.format(new Date(new Date(r.window.end) - 1))}` : "";
+  $("sim-history").textContent = `${win} · "History" = the simulator with every lever at its historical setting: ${fmtEnergy(b.curtailed_twh * 1e6)}` +
+    (sameData && p1 ? `. Part 1 reconstruction for the same window: ${fmtEnergy(p1 * 1e6)} (gap ${nf(1).format((b.curtailed_twh / p1 - 1) * 100)}%).` : ".");
+
+  const tiles = [["payments", "payments_gbp", (v) => fmtCompact(v, "£")], ["gas", "replacement_gas_gbp", (v) => fmtCompact(v, "£")],
+    ["co2", "co2_t", (v) => `${fmtCompact(v)} t`], ["homes", "homes_equiv", (v) => fmtCompact(v)]];
+  for (const [id, key, fmt] of tiles) {
+    $(`s-${id}`).textContent = fmt(s[key]);
+    deltaText($(`s-${id}-d`), d[key], b[key], fmt);
+  }
+
+  // B4 / B6: history bar vs scenario bar per boundary
+  const bnode = clear($("sim-boundaries"));
+  const max = Math.max(1e-12, ...["B4", "B6"].flatMap((k) => [s.by_boundary_twh[k], b.by_boundary_twh[k]]));
+  bnode.append(el("div", { class: "legend" },
+    el("span", { class: "key" }, el("span", { class: "swatch", style: { background: C.neutral } }), "History"),
+    el("span", { class: "key" }, el("span", { class: "swatch", style: { background: C.waste } }), "This scenario")));
+  for (const k of ["B4", "B6"]) {
+    bnode.append(el("div", { class: "cmp-row", title: `${k}: history ${fmtEnergy(b.by_boundary_twh[k] * 1e6)}, scenario ${fmtEnergy(s.by_boundary_twh[k] * 1e6)}` },
+      el("strong", {}, k),
+      el("span", { class: "cmp-bars" },
+        el("span", { style: { width: `${(b.by_boundary_twh[k] / max) * 100}%`, background: C.neutral } }),
+        el("span", { style: { width: `${(s.by_boundary_twh[k] / max) * 100}%`, background: C.waste } })),
+      el("span", { class: "val" }, fmtEnergy(s.by_boundary_twh[k] * 1e6))));
+  }
+
+  // batteries
+  const bo = clear($("sim-batteries-out"));
+  if (r.batteries.length) {
+    const t = el("table", { class: "table" }, el("thead", {}, el("tr", {}, el("th", {}, "Battery"),
+      el("th", { class: "num" }, "Waste caught"), el("th", { class: "num" }, "Revenue"), el("th", { class: "num" }, "Cycles"))));
+    const tb = el("tbody");
+    for (const x of r.batteries) {
+      tb.append(el("tr", {}, el("td", {}, x.battery_id), el("td", { class: "num" }, fmtEnergy(x.captured_curtailment_mwh)),
+        el("td", { class: "num" }, fmtCompact(x.revenue_gbp, "£")), el("td", { class: "num" }, nf(1).format(x.cycles))));
+    }
+    t.append(tb);
+    bo.append(el("div", { class: "table-wrap" }, t));
+    const fb = Math.max(...r.batteries.map((x) => x.forecast_fallback_periods || 0));
+    if (state.sim.quality === "ours" && fb) bo.append(el("p", { class: "note" },
+      `${nf(0).format(fb)} half hours had no forecast (outside the backtest months), so the plan there had no waste information.`));
+  }
+
+  // farms (indicative)
+  const ft = clear($("sim-farms"));
+  ft.append(el("thead", {}, el("tr", {}, el("th", {}, "Farm"), el("th", { class: "num" }, "History"),
+    el("th", { class: "num" }, "Scenario"), el("th", { class: "num" }, "Change"))));
+  const fb = el("tbody");
+  for (const f of r.farms.slice(0, 12)) {
+    const ch = f.curtailed_mwh - f.baseline_curtailed_mwh;
+    fb.append(el("tr", {}, el("td", {}, farmName(f.farm_id)), el("td", { class: "num" }, fmtEnergy(f.baseline_curtailed_mwh)),
+      el("td", { class: "num" }, fmtEnergy(f.curtailed_mwh)),
+      el("td", { class: "num" }, Math.abs(ch) < 0.5 ? "–" : `${ch > 0 ? "+" : "−"}${fmtEnergy(Math.abs(ch))}`)));
+  }
+  ft.append(fb);
+
+  const notes = [`${r.cached ? "cached" : `computed in ${nf(0).format(r.elapsed_ms)} ms`}`];
+  if (r.levers_not_yet_applied && r.levers_not_yet_applied.length) notes.push(`not applied yet: ${r.levers_not_yet_applied.join(", ")}`);
+  $("sim-status").textContent = notes.join(" · ");
+}
+
+// --- lever controls ---
+
+function syncBoundaryControl(name) {
+  const box = document.querySelector(`.lever[data-boundary="${name}"]`);
+  const lv = state.sim[name];
+  box.querySelectorAll(".seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === lv.mode)));
+  const input = box.querySelector("input"), out = box.querySelector("output");
+  if (lv.mode === "historical") { input.disabled = true; out.textContent = "as it was"; return; }
+  const r = RANGES[lv.mode];
+  Object.assign(input, { disabled: false, min: r.min, max: r.max, step: r.step });
+  input.value = lv.mw;
+  out.textContent = lv.mode === "offset" ? `${lv.mw >= 0 ? "+" : "−"}${nf(0).format(Math.abs(lv.mw))} MW` : `${nf(0).format(lv.mw)} MW`;
+}
+
+function syncControls() {
+  syncBoundaryControl("b4"); syncBoundaryControl("b6");
+  $("wind-scale").value = state.sim.wind; $("wind-scale-out").textContent = `${state.sim.wind}%`;
+  $("forecast-quality").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.q === state.sim.quality)));
+  $("window-preset").value = state.sim.preset;
+  $("window-custom").hidden = state.sim.preset !== "custom";
+  renderBatteryList();
+  drawBatteryMarkers();
+}
+
+function initSimControls() {
+  for (const name of ["b4", "b6"]) {
+    const box = document.querySelector(`.lever[data-boundary="${name}"]`);
+    box.querySelectorAll(".seg button").forEach((btn) => btn.addEventListener("click", () => {
+      const mode = btn.dataset.mode;
+      state.sim[name] = { mode, mw: mode === "historical" ? 0 : RANGES[mode].val };
+      syncBoundaryControl(name); scheduleSim();
+    }));
+    box.querySelector("input").addEventListener("input", (e) => {
+      state.sim[name].mw = Number(e.target.value); syncBoundaryControl(name); scheduleSim();
+    });
+  }
+  $("wind-scale").addEventListener("input", (e) => {
+    state.sim.wind = Number(e.target.value); $("wind-scale-out").textContent = `${state.sim.wind}%`; scheduleSim();
+  });
+  $("forecast-quality").querySelectorAll("button").forEach((btn) => btn.addEventListener("click", () => {
+    state.sim.quality = btn.dataset.q; syncControls(); scheduleSim();
+  }));
+  $("window-preset").addEventListener("change", (e) => {
+    state.sim.preset = e.target.value; $("window-custom").hidden = state.sim.preset !== "custom";
+    if (state.sim.preset === "custom" && state.days.length) {
+      $("window-start").min = $("window-end").min = isoDay(state.days[0]);
+      $("window-start").max = $("window-end").max = isoDay(new Date(state.days[state.days.length - 1].getTime() + 86400000));
+    }
+    scheduleSim();
+  });
+  for (const id of ["window-start", "window-end"]) $(id).addEventListener("change", () => {
+    state.sim.start = $("window-start").value; state.sim.end = $("window-end").value; scheduleSim();
+  });
+  $("sim-reset").addEventListener("click", () => { state.sim = SIM_DEFAULT(); setPlacing(false); syncControls(); scheduleSim(); });
+  $("place-battery").addEventListener("click", () => setPlacing(!state.placing));
+}
+
+// --- batteries on the map ---
+
+function lineLatAt(coords, lon) {   // latitude of a boundary polyline at a longitude (clamped to its ends)
+  if (lon <= coords[0][0]) return coords[0][1];
+  for (let i = 1; i < coords.length; i++) {
+    const [x0, y0] = coords[i - 1], [x1, y1] = coords[i];
+    if (lon <= x1) return y0 + ((lon - x0) / (x1 - x0)) * (y1 - y0);
+  }
+  return coords[coords.length - 1][1];
+}
+function zoneAt(lon, lat) {
+  if (lat > lineLatAt(BOUNDARIES.B4, lon)) return "north_scotland";
+  if (lat > lineLatAt(BOUNDARIES.B6, lon)) return "south_scotland";
+  return null;
+}
+
+function setPlacing(on) {
+  state.placing = on;
+  $("place-battery").setAttribute("aria-pressed", String(on));
+  $("place-battery").textContent = on ? "Click the map… (click here to stop)" : "Place a battery on the map";
+  $("map").classList.toggle("placing", on);
+}
+
+function onMapClickPlace(e) {
+  if (!state.placing || state.tab !== "simulate") return false;
+  const { lng, lat } = e.lngLat;
+  const zone = zoneAt(lng, lat);
+  if (!zone) { $("place-hint").textContent = "That's south of B6 (England), outside the model. Click in Scotland."; return true; }
+  batteryN += 1;
+  state.sim.batteries.push({ battery_id: `battery_${batteryN}`, lat: +lat.toFixed(4), lon: +lng.toFixed(4), zone,
+    power_mw: 200, energy_mwh: 400, efficiency: 0.88 });
+  $("place-hint").textContent = `Added a battery ${zone === "north_scotland" ? "north of B4" : "between B4 and B6"}. Edit its size below.`;
+  renderBatteryList(); drawBatteryMarkers(); scheduleSim();
+  return true;
+}
+
+function renderBatteryList() {
+  const list = clear($("battery-list"));
+  for (const b of state.sim.batteries) {
+    const field = (label, key, min, max, step) => el("label", {}, `${label} `,
+      el("input", { type: "number", min, max, step, value: key === "efficiency" ? Math.round(b[key] * 100) : b[key],
+        oninput: (e) => {
+          const v = Number(e.target.value);
+          if (!Number.isFinite(v) || v < min || v > max) return;
+          b[key] = key === "efficiency" ? v / 100 : v; scheduleSim();
+        } }));
+    list.append(el("div", { class: "battery" },
+      el("div", {}, el("strong", {}, b.battery_id), ` · ${b.zone === "north_scotland" ? "north of B4" : "between B4 and B6"}`),
+      el("button", { type: "button", class: "remove", "aria-label": `Remove ${b.battery_id}`, onclick: () => {
+        state.sim.batteries = state.sim.batteries.filter((x) => x !== b); renderBatteryList(); drawBatteryMarkers(); scheduleSim();
+      } }, "×"),
+      el("div", { class: "fields" }, field("MW", "power_mw", 1, 5000, 10), field("MWh", "energy_mwh", 1, 20000, 10),
+        field("efficiency %", "efficiency", 80, 95, 1))));
+  }
+}
+
+function drawBatteryMarkers() {
+  batteryMarkers.forEach((m) => m.remove());
+  batteryMarkers.length = 0;
+  if (!map || state.tab !== "simulate") return;
+  for (const b of state.sim.batteries) {
+    const m = new maplibregl.Marker({ element: el("div", { class: "battery-marker", title: `${b.battery_id}: ${b.power_mw} MW / ${b.energy_mwh} MWh` }) })
+      .setLngLat([b.lon, b.lat]).addTo(map);
+    batteryMarkers.push(m);
+  }
+}
+
+async function loadSimulate() {
+  if (!simInit) { initSimControls(); simInit = true; syncControls(); }
+  drawBatteryMarkers();
+  if (!state.simResult) await runSim(); else { renderSim(); updateMap(); }
+}
+
 // ---------- tabs, intro, boot ----------
 
 function setTab(tab) {
@@ -552,7 +825,10 @@ function setTab(tab) {
   document.querySelectorAll(".tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
   document.querySelectorAll(".tab").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
   if (tab !== "reveal") stopPlay();
+  if (tab !== "simulate") setPlacing(false);
+  drawBatteryMarkers();
   if (tab === "predict") loadPredict(); else if (tab === "reveal") { renderReveal(); updateMap(); loadFarmDetail().catch(showError); }
+  else if (tab === "simulate") loadSimulate();
   else updateMap();
 }
 
@@ -571,7 +847,7 @@ function initIntro() {
 async function boot() {
   initIntro();
   document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
-  document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => { stopPlay(); setMode(b.dataset.mode); }));
+  document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.addEventListener("click", () => { stopPlay(); setMode(b.dataset.mode); }));
   $("play").addEventListener("click", togglePlay);
   $("day-slider").addEventListener("input", (e) => { stopPlay(); state.day = Number(e.target.value); if (state.mode !== "day") setMode("day"); else loadReveal(); });
   $("farm-clear").addEventListener("click", () => selectFarm(state.farm));
