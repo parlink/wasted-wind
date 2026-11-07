@@ -69,7 +69,7 @@ Primary key: (`zone`, `period_start`).
 | `zone` | str | `north_scotland` or `south_scotland`. |
 | `period_start` | timestamp UTC | |
 | `residual_mw` | float | Non-wind generation minus local demand in the zone (positive = zone exports even without wind). |
-| `residual_method` | str | `binding` (boundary was full: limit − wind delivered) or `flow_estimate` (from NESO day-ahead flow) or `fallback` (weekly limits / interpolation). |
+| `residual_method` | str | `binding` (the zone's farms were curtailed, so the boundary was full: flow = limit), `flow_estimate` (NESO day-ahead flow, capped at ± the limit) or `fallback` (limits/flows filled from weekly data or interpolation). Either way `residual_N = flow_B4 − wind_N` and **`residual_S = flow_B6 − wind_S − flow_B4`** (the B4 inflow is not part of the south zone, #21). |
 | `boundary` | str | The boundary on this zone's southern edge: `B4` for north_scotland, `B6` for south_scotland. |
 | `boundary_limit_mw` | float | NESO day-ahead limit for that boundary (weekly data as fallback). Simulator lever 1/2 baseline. |
 | `boundary_flow_mw` | float, nullable | NESO day-ahead flow for that boundary. |
@@ -87,10 +87,10 @@ and the live "tomorrow" forecast. Primary key: (`farm_id`, `hour_start`, `issued
 | `farm_id` | str | Forecast is per farm (sum of its BMUs). |
 | `zone` | str | |
 | `hour_start` | timestamp UTC | Hour being predicted. |
-| `issued_at` | timestamp UTC | When the forecast was made. Every signal must be timestamped ≤ this. For day-ahead: D-1 10:00 UTC. |
+| `issued_at` | timestamp UTC | When the forecast was made. Every signal must be timestamped ≤ this. `backtest` rows: D-1 10:00 UTC. `live` rows: the refresh time (hourly), so their lead time is shorter than the backtest's. |
 | `split` | str | `backtest` (walk-forward test month) or `live`. |
 | `curtailed_mwh_pred` | float | Tweedie point forecast for the hour. ≥ 0. |
-| `curtailed_mwh_p10` | float, nullable | 10th percentile (Full tier). |
+| `curtailed_mwh_p10` | float, nullable | 10th percentile (Full tier). The p10–p90 band always contains `curtailed_mwh_pred`. |
 | `curtailed_mwh_p90` | float, nullable | 90th percentile (Full tier). |
 | `curtailed_mwh_actual` | float, nullable | Σ `curtailed_mwh_a` over the hour; null for `live` rows in the future. |
 | `baseline_persistence_mwh` | float | Same hour two days earlier. |
@@ -117,6 +117,10 @@ The dispatcher works in half hours: split each hourly value equally into its two
 }
 ```
 
+Also present (added in #5/#14, extra keys are allowed): `ablations` (e.g. `lightgbm_without_neso_limits`,
+same metric keys as `models`), `interval` (`coverage_p10_p90`, `coverage_on_waste_hours`, …) and
+`notes` (list of strings). `shap_top_signals` is mean |SHAP| on each fold's held-out month.
+
 ## 5. `data/processed/schedules.parquet` (A writes, Part 3)
 
 One row per `battery_id` per `strategy` per `period_start` (per plan issue in live mode).
@@ -130,7 +134,7 @@ Primary key: (`battery_id`, `strategy`, `dispatcher`, `period_start`, `plan_issu
 | `strategy` | str | `do_nothing`, `reactive`, `forecast` (ours), `perfect`. |
 | `dispatcher` | str | `rule` or `lp`. |
 | `period_start` | timestamp UTC | |
-| `plan_issued_at` | timestamp UTC | When this plan was made (D-1 evening, or the 30-min re-plan time). Backtest: one value per day. |
+| `plan_issued_at` | timestamp UTC | When this plan was made. Backtest: D-1 10:00 UTC, one value per day (the plan's market inputs are fixed then; at midnight it is re-run from the actual SoC). Live (`dispatch/live.py`): the 30-min re-plan time; the newest plan per half hour wins. |
 | `action` | str | `charge`, `hold`, `discharge`. |
 | `power_mw` | float | ≥ 0. Direction comes from `action`; 0 when `hold`. |
 | `soc_mwh` | float | State of charge at the **end** of the period. 0 ≤ value ≤ energy capacity. |
@@ -150,7 +154,12 @@ Primary key: (`battery_id`, `strategy`, `dispatcher`, `period_start`, `plan_issu
 }
 ```
 
-`capture_ratio` = strategy revenue ÷ `perfect` revenue (so `perfect` = 1.0, `do_nothing` = 0.0).
+`results` has one entry per (`strategy`, `dispatcher`): `do_nothing/rule`, `reactive/rule|lp`, `forecast/rule|lp`,
+`perfect/rule` (the rules given perfect knowledge) and **`perfect/lp`** (the perfect-hindsight optimum from
+`dispatch.optimiser.hindsight_bound`, a true ceiling). `capture_ratio` = revenue ÷ **`perfect/lp`** revenue, so
+`perfect/lp` = 1.0, `perfect/rule` < 1 and `do_nothing` = 0.0. Extra keys: `capture_ratio_basis`, `holdout`
+(`months`, `capture_ratio`, `revenue_gbp` for months the planning threshold was not tuned on), `plan_waste_fraction`
+and `caveats`. `schedules.parquet` likewise has `perfect/lp` rows.
 
 ## 6. Python interfaces across the A/B boundary
 
@@ -170,7 +179,10 @@ def plan_day(
 def simulate(scenario: dict) -> dict  # scenario/results exactly as POST /api/scenario below
 ```
 
-Fixed day length of 48 is assumed; clock-change days are handled by the caller padding/trimming.
+Fixed day length of 48 is assumed; clock-change days are handled by the caller padding/trimming. `dispatch/live.py` passes the **remaining** half hours of
+today instead (shape `(n,)`, n ≤ 48); both planners accept any length, including 0. `dispatch.optimiser.plan_day`
+(the LP) has the same signature and return shape as `dispatch.rule_based.plan_day`; both may return a `discharge`
+with `power_mw > 0` where the planned SoC is 0 (sale intent), so callers cap by actual SoC.
 
 ## 7. HTTP API (B writes `app/server.py`)
 
@@ -188,7 +200,7 @@ Every response body includes:
 | --- | --- |
 | `GET /api/health` | `{"status": "ok", "meta": {...}}` |
 | `GET /api/farms` | `{"farms": [{"farm_id", "farm_name", "lat", "lon", "capacity_mw", "zone", "site_type", "bmu_ids": [..]}]}` |
-| `GET /api/reveal/summary?start&end` | `{"totals": {"curtailed_twh", "payments_gbp", "homes_equiv", "by_boundary_twh": {"B4", "B6"}}, "farms": [{"farm_id", "curtailed_mwh", "potential_mwh", "share_wasted"}]}` |
+| `GET /api/reveal/summary?start&end` | `{"totals": {"curtailed_twh", "payments_gbp", "replacement_gas_gbp", "co2_t", "homes_equiv", "by_boundary_twh": {"B4", "B6"}}, "farms": [{"farm_id", "curtailed_mwh", "potential_mwh", "share_wasted"}]}` (`potential_mwh` = Σ `planned_mwh`, so `share_wasted` is the share of planned output) |
 | `GET /api/reveal/farm/{farm_id}?start&end` | `{"farm_id", "series": [{"period_start", "planned_mwh", "accepted_mwh", "metered_mwh", "curtailed_mwh_a", "curtailed_mwh_b"}]}` |
 | `GET /api/reveal/boundaries?start&end` | `{"boundaries": [{"boundary": "B4", "share_periods_binding": 0.42, "approximate": true}]}` |
 | `GET /api/forecast/tomorrow` | `{"issued_at", "farms": [{"farm_id", "hours": [{"hour_start", "pred_mwh", "p10_mwh", "p90_mwh"}]}]}` |
