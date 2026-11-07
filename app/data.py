@@ -21,11 +21,24 @@ REAL_FARMS = ROOT / "reference" / "farms.csv"
 VERSION_FILE = PROCESSED_DIR / "DATA_VERSION"   # optional one-line release tag, e.g. "data-v1"
 
 
+def _usable(p: Path) -> bool:
+    return p.is_file() and p.stat().st_size > 0
+
+
 def resolve(name: str) -> tuple[Path, str]:
-    """Return (path, source) for a contract file, source being 'processed' or 'fixtures'."""
+    """Return (path, source) for a contract file, source being 'processed' or 'fixtures'.
+
+    reference/farms.csv is only used once real curtailment exists, because its farm_ids
+    don't match the fixture curtailment (the map would show farms with no data).
+    """
     mode = os.environ.get("WW_DATA_SOURCE", "auto")
-    real = REAL_FARMS if name == "farms.csv" else PROCESSED_DIR / name
-    if mode != "fixtures" and real.is_file() and real.stat().st_size > 0:
+    if name == "farms.csv":
+        real = REAL_FARMS
+        ok = _usable(REAL_FARMS) and _usable(PROCESSED_DIR / "curtailment.parquet")
+    else:
+        real = PROCESSED_DIR / name
+        ok = _usable(real)
+    if mode != "fixtures" and ok:
         return real, "processed"
     if mode == "processed":
         raise FileNotFoundError(f"{real} missing and WW_DATA_SOURCE=processed")

@@ -1,20 +1,150 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Wasted Wind</title></head>
-<body style="font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem">
-<h1>Wasted Wind</h1>
-<p>Dashboard placeholder; the map arrives in issue #8. The API is live:</p>
-<ul>
-  <li><a href="/api/health">/api/health</a></li>
-  <li><a href="/api/farms">/api/farms</a></li>
-  <li><a href="/api/reveal/summary">/api/reveal/summary</a></li>
-  <li><a href="/api/reveal/boundaries">/api/reveal/boundaries</a></li>
-  <li><a href="/api/forecast/tomorrow">/api/forecast/tomorrow</a></li>
-  <li><a href="/api/forecast/metrics">/api/forecast/metrics</a></li>
-  <li><a href="/api/autopilot/schedule">/api/autopilot/schedule</a></li>
-  <li><a href="/api/autopilot/scorecard">/api/autopilot/scorecard</a></li>
-  <li><a href="/api/method/calibration">/api/method/calibration</a></li>
-  <li><a href="/docs">/docs</a> (interactive, includes POST /api/scenario)</li>
-</ul>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wasted Wind</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Intro: two screens. Enter/click advances, Esc skips. -->
+<div id="intro" class="intro" role="dialog" aria-label="Introduction">
+  <div class="intro-step" data-step="0">
+    <p class="intro-big">In 2025 Britain switched off about <strong>10&nbsp;TWh</strong> of wind, almost all of it in Scotland.</p>
+    <p class="intro-hint">Enter to continue · Esc to skip</p>
+  </div>
+  <div class="intro-step" data-step="1" hidden>
+    <p class="intro-big">The yearly total is known. Where, when and why is not.</p>
+    <p class="intro-big intro-accent">We rebuilt it.</p>
+    <button type="button" id="enter-map" class="btn-primary">Enter map</button>
+  </div>
+</div>
+
+<div id="map" aria-label="Map of Scottish wind farms"></div>
+<div id="map-legend" class="map-legend"></div>
+<div id="map-tip" class="tip" hidden></div>
+<div id="fake-banner" class="fake-banner" hidden>Fake data (app/fixtures): real numbers arrive with Person A's data release</div>
+
+<aside id="panel" class="panel">
+  <header class="panel-head">
+    <h1>Wasted Wind</h1>
+    <span id="source-tag" class="tag"></span>
+  </header>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="reveal" aria-selected="true">Reveal</button>
+    <button role="tab" data-tab="predict" aria-selected="false">Predict</button>
+    <button role="tab" data-tab="simulate" aria-selected="false">Simulate</button>
+    <button role="tab" data-tab="autopilot" aria-selected="false">Autopilot</button>
+    <button role="tab" data-tab="method" aria-selected="false">Method</button>
+  </nav>
+  <div id="error" class="error" hidden></div>
+
+  <!-- ===== Reveal ===== -->
+  <section id="tab-reveal" class="tab" role="tabpanel">
+    <div class="filter-row">
+      <div class="seg" role="group" aria-label="Time window">
+        <button type="button" data-mode="all" aria-pressed="true">Whole period</button>
+        <button type="button" data-mode="day" aria-pressed="false">One day</button>
+      </div>
+      <button type="button" id="play" class="icon-btn" aria-label="Play through days">▶</button>
+    </div>
+    <div class="filter-row">
+      <input type="range" id="day-slider" min="0" max="0" value="0" aria-label="Day">
+      <span id="window-label" class="window-label"></span>
+    </div>
+
+    <div class="hero">
+      <div class="label">Wind switched off <span class="tag-est">estimated</span></div>
+      <div id="hero-value" class="hero-value">–</div>
+      <div id="hero-sub" class="sub"></div>
+    </div>
+    <div class="tiles">
+      <div class="tile"><div class="label">Paid to switch off</div><div class="value" id="t-payments">–</div></div>
+      <div class="tile"><div class="label">Replacement gas</div><div class="value" id="t-gas">–</div></div>
+      <div class="tile"><div class="label">CO₂ from replacement</div><div class="value" id="t-co2">–</div></div>
+      <div class="tile"><div class="label">Homes it could power</div><div class="value" id="t-homes">–</div></div>
+    </div>
+
+    <div class="block">
+      <h3>Which bottleneck <span class="tag-est">approximate</span></h3>
+      <div id="boundary-bar" class="segbar" role="img"></div>
+      <div id="boundary-legend" class="legend"></div>
+      <p id="binding-note" class="note"></p>
+    </div>
+
+    <div class="block">
+      <h3>Farms, by energy switched off</h3>
+      <p class="note">Click a farm here or on the map.</p>
+      <div id="farm-bars" class="hbars"></div>
+    </div>
+
+    <div class="block" id="farm-detail" hidden>
+      <div class="detail-head">
+        <h3 id="farm-title"></h3>
+        <button type="button" id="farm-clear" class="link-btn">All farms</button>
+      </div>
+      <div id="farm-sub" class="sub"></div>
+      <div id="farm-legend" class="legend"></div>
+      <div class="chart-box"><canvas id="farm-chart" aria-label="Planned and delivered output"></canvas></div>
+      <h4>Two independent estimates, daily</h4>
+      <div id="ab-legend" class="legend"></div>
+      <div class="chart-box short"><canvas id="ab-chart" aria-label="Method A and Method B daily totals"></canvas></div>
+      <p id="ab-note" class="note"></p>
+    </div>
+  </section>
+
+  <!-- ===== Predict ===== -->
+  <section id="tab-predict" class="tab" role="tabpanel" hidden>
+    <div class="hero">
+      <div class="label"><span id="pred-scope">Tomorrow, all farms</span> <span class="tag-est">forecast</span></div>
+      <div id="pred-value" class="hero-value">–</div>
+      <div id="pred-sub" class="sub"></div>
+    </div>
+    <div id="pred-legend" class="legend"></div>
+    <div class="chart-box"><canvas id="tomorrow-chart" aria-label="Tomorrow's hourly forecast"></canvas></div>
+
+    <div class="block">
+      <h3>Tomorrow by farm</h3>
+      <div class="table-wrap"><table id="pred-table" class="table"></table></div>
+    </div>
+
+    <div class="block">
+      <h3>Model vs baselines</h3>
+      <p class="note">Average error per farm-hour, walk-forward. Lower is better.</p>
+      <div id="mae-bars" class="hbars"></div>
+      <div class="table-wrap"><table id="metrics-table" class="table"></table></div>
+      <p id="metrics-note" class="note"></p>
+    </div>
+
+    <div class="block">
+      <h3>Backtest: forecast vs what happened</h3>
+      <div id="bt-legend" class="legend"></div>
+      <div class="chart-box"><canvas id="backtest-chart" aria-label="Backtest forecast against actual"></canvas></div>
+    </div>
+
+    <div class="block">
+      <h3>Which signals drive the forecast</h3>
+      <p class="note">Mean absolute SHAP value: how far each signal moves a prediction on average.</p>
+      <div id="shap-bars" class="hbars wide"></div>
+    </div>
+  </section>
+
+  <section id="tab-simulate" class="tab" role="tabpanel" hidden>
+    <p class="placeholder">The simulator and its levers arrive in issue #10.</p>
+  </section>
+  <section id="tab-autopilot" class="tab" role="tabpanel" hidden>
+    <p class="placeholder">The battery autopilot arrives in issue #11.</p>
+  </section>
+  <section id="tab-method" class="tab" role="tabpanel" hidden>
+    <p class="placeholder">Calibration and data sources arrive with the simulator (#9).</p>
+  </section>
+</aside>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
