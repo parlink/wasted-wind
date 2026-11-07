@@ -188,10 +188,11 @@ def run_fold(panel: pd.DataFrame, month: pd.Timestamp):
 OPENMETEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 
 
-def live_inputs(now: pd.Timestamp):
-    """Weather, limits and demand for tomorrow (UTC), as known right now. Needs the network."""
+def live_inputs(now: pd.Timestamp, day: pd.Timestamp | None = None):
+    """Weather, limits and demand for `day` (default tomorrow, UTC), as known right now.
+    Needs the network."""
     from pipeline import fetch, residual as rs
-    day = (now + pd.Timedelta(days=1)).normalize()
+    day = (now + pd.Timedelta(days=1)).normalize() if day is None else day.normalize()
     farms = pd.read_csv(ft.ROOT / "reference" / "farms.csv").drop_duplicates("farm_id")
     rows = []
     for f in farms.itertuples():
@@ -230,10 +231,12 @@ def _live_limits(neso_wide: pd.DataFrame, day: pd.Timestamp) -> pd.DataFrame:
     return pd.concat([lim[lim.index < day], have])
 
 
-def live_rows(models: dict, baselines: dict, curt: pd.DataFrame, now: pd.Timestamp) -> pd.DataFrame:
-    weather, lim, dem_h = live_inputs(now)
+def live_rows(models: dict, baselines: dict, curt: pd.DataFrame, now: pd.Timestamp,
+              day: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Forecast rows for `day` (default tomorrow) issued now. dispatch.live uses day = today."""
+    day = (now + pd.Timedelta(days=1)).normalize() if day is None else day.normalize()
+    weather, lim, dem_h = live_inputs(now, day)
     farms = pd.read_csv(ft.ROOT / "reference" / "farms.csv")
-    day = (now + pd.Timedelta(days=1)).normalize()
     if curt.period_start.max() < day - pd.Timedelta(hours=25):     # lag48 needs D-2 complete
         log.warning("live: Part 1 data ends %s; lag48 / persistence and trailing signals for %s "
                     "are incomplete", curt.period_start.max(), f"{day:%Y-%m-%d}")

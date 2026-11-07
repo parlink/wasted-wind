@@ -211,6 +211,7 @@ def test_perfect_beats_ours_beats_do_nothing_every_month():
     s = pd.read_parquet(SCHED, columns=["strategy", "dispatcher", "period_start", "revenue_gbp"])
     s = s.assign(k=s.strategy + "_" + s.dispatcher)
     m = s.groupby([s.period_start.dt.strftime("%Y-%m"), "k"]).revenue_gbp.sum().unstack()
+    m = m.dropna(subset=["perfect_lp"])          # backtest months only (live re-plans have no ceiling)
     assert (m["perfect_lp"] >= m["forecast_rule"] - 1e-6).all(), m
     assert (m["perfect_lp"] >= m["reactive_rule"] - 1e-6).all(), m
     assert (m["forecast_rule"] >= m["do_nothing_rule"] - 1e-6).all(), m
