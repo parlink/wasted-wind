@@ -145,7 +145,7 @@ def test_forecast_metrics():
 def test_autopilot_schedule_and_scorecard():
     s = _ok("/api/autopilot/schedule")
     assert s["batteries"] and len(s["batteries"][0]["steps"]) == 48
-    assert set(s["batteries"][0]["steps"][0]) == {"period_start", "action", "power_mw", "soc_mwh", "reason"}
+    assert {"period_start", "action", "power_mw", "soc_mwh", "reason"} <= set(s["batteries"][0]["steps"][0])
     bid = s["batteries"][0]["battery_id"]
     one = _ok(f"/api/autopilot/schedule?battery_id={bid}")
     assert [b["battery_id"] for b in one["batteries"]] == [bid]
@@ -180,3 +180,18 @@ def test_method_calibration():
 def test_index_served():
     r = client.get("/")
     assert r.status_code == 200 and "<html" in r.text.lower()
+
+
+def test_autopilot_schedule_reports_available_days_and_step_results():
+    s = _ok("/api/autopilot/schedule?strategy=reactive")
+    first, last = s["available"]["first"], s["available"]["last"]
+    assert first <= s["date"] <= last
+    step = s["batteries"][0]["steps"][0]
+    assert {"captured_curtailment_mwh", "revenue_gbp"} <= set(step)
+    earlier = _ok(f"/api/autopilot/schedule?strategy=reactive&date={first}")
+    assert earlier["date"] == first and earlier["batteries"]
+
+
+def test_autopilot_schedule_unknown_date_is_empty_not_error():
+    s = _ok("/api/autopilot/schedule?date=1999-01-01")
+    assert s["batteries"] == [] and s["available"]["first"]
