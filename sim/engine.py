@@ -6,7 +6,7 @@ Per half hour, in MW:
   3. batteries charge from would-be waste / discharge into boundary headroom (lever 4, 13)
   4. flow_B4 = min(surplus_N, B4); surplus_S = wind_S + residual_S + flow_B4; flow_B6 = min(surplus_S, B6)
   5. waste = what's over a limit; B4 waste from North farms, B6 waste from any Scottish farm,
-     cheapest bids (least negative) first
+     split like history did in that half hour, else cheapest bids (least negative) first
   6. costs: switch-off payments, replacement gas, CO2
 
 The engine always runs the full period (so batteries arrive realistically charged) and the
@@ -197,6 +197,23 @@ def waterfall(m: np.ndarray, excess: np.ndarray) -> np.ndarray:
     return np.clip(excess[:, None] - before, 0.0, m)
 
 
+def allocate(m: np.ndarray, excess: np.ndarray, hist: np.ndarray) -> np.ndarray:
+    """Split each period's excess (T,) across units (columns of m, MW available) for curtailment.
+
+    Where history curtailed someone in that half hour, follow that pattern: each unit's share of
+    the historical curtailment, scaled to the new excess (so historical settings reproduce every
+    unit exactly). Whatever is left (no history that period, or a unit runs out of output) goes
+    cheapest bid first, i.e. in column order (BRIEF Part 4). Never exceeds m; conserves the excess
+    up to the total available.
+    """
+    hs = hist.sum(axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        share = np.where(hs[:, None] > 0, hist / hs[:, None], 0.0)
+    first = np.minimum(share * excess[:, None], m)
+    rest = np.maximum(excess - first.sum(axis=1), 0.0)
+    return first + waterfall(m - first, rest)
+
+
 def _boundaries(pot_n, pot_s, res_n, res_s, l4, l6, net_n=0.0, net_s=0.0):
     """Zone physics for all periods. net_* = battery injection (+ discharge, - charge), MW."""
     s_n = pot_n + res_n + net_n
@@ -322,10 +339,11 @@ def run_core(inp: Inputs, sc: dict) -> dict:
         ex4, ex6 = np.maximum(ex4, 0.0), np.maximum(ex6, 0.0)
 
     # who gets switched off: B4 waste from North units, then B6 waste from all Scottish units,
-    # each in priority order (inp.bmu is already sorted cheapest first)
+    # following each half hour's historical pattern, else cheapest first (see allocate)
+    hist_mw = inp.hist_curtailed_mwh / H
     cut = np.zeros_like(pot)
-    cut[:, inp.north] = waterfall(pot[:, inp.north], ex4)
-    cut += waterfall(pot - cut, ex6)
+    cut[:, inp.north] = allocate(pot[:, inp.north], ex4, hist_mw[:, inp.north])
+    cut += allocate(pot - cut, ex6, np.maximum(hist_mw - cut, 0.0))
     return {"pot": pot, "cut_mw": cut, "ex4": ex4, "ex6": ex6, "flow4": flow4, "flow6": flow6, "plans": plans}
 
 

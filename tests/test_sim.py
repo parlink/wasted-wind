@@ -188,3 +188,33 @@ def test_reports_input_quality():
     r = simulate({})
     assert r["input_quality"]["dropped_bmus"] == []
     assert isinstance(r["input_quality"]["gaps"], dict)
+
+
+# ---------- per-farm allocation (#10, from the #22 calibration on real data) ----------
+
+def test_historical_settings_reproduce_every_farm():
+    from sim.calibrate import calibration_report
+    by_farm = calibration_report()["by_farm"]
+    assert (by_farm["simulated_mwh"] - by_farm["historical_mwh"]).abs().max() < 1e-3 * by_farm["historical_mwh"].max()
+
+
+def test_allocation_follows_history_then_cheapest_first():
+    from sim.engine import allocate
+    pot = np.array([[100.0, 100.0, 100.0],     # history: unit 2 took all the waste
+                    [100.0, 100.0, 100.0]])    # no history this period
+    hist = np.array([[0.0, 0.0, 30.0],
+                     [0.0, 0.0, 0.0]])
+    out = allocate(pot, np.array([60.0, 150.0]), hist)
+    np.testing.assert_allclose(out[0], [0.0, 0.0, 60.0])           # scaled-up historical pattern
+    np.testing.assert_allclose(out[1], [100.0, 50.0, 0.0])         # cheapest first (column order)
+
+
+def test_allocation_never_exceeds_output_and_conserves_excess():
+    from sim.engine import allocate
+    rng = np.random.default_rng(1)
+    pot = rng.uniform(0, 100, (200, 6))
+    hist = rng.uniform(0, 1, (200, 6)) * pot * (rng.uniform(0, 1, (200, 1)) > 0.5)
+    ex = rng.uniform(0, 1, 200) * pot.sum(axis=1)
+    out = allocate(pot, ex, hist)
+    assert (out <= pot + 1e-9).all() and (out >= -1e-12).all()
+    np.testing.assert_allclose(out.sum(axis=1), ex, rtol=1e-9, atol=1e-9)
