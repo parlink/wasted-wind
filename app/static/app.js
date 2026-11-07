@@ -647,7 +647,19 @@ async function loadBacktest() {
 const SIM_DEFAULT = () => ({
   b4: { mode: "historical", mw: 0 }, b6: { mode: "historical", mw: 0 },
   batteries: [], wind: 100, quality: "ours", preset: "all", start: "", end: "",
+  link: { zone: "", gw: 2 },
+  demand: { zone: "north_scotland", hp: 0, ev: 0, dc: 0 },
+  eco: { gas: 80, carbon: 50, intensity: 0.37, switch: 1 },
 });
+// landing points for the drawn undersea cable (indicative), and the slider formats
+const LINK_ROUTES = { north_scotland: [[-1.78, 57.50], [-1.15, 53.75]], south_scotland: [[-2.40, 55.97], [-1.35, 54.80]] };
+const SIM_SLIDERS = [
+  ["dem-hp", "demand", "hp", (v) => `${nf(1).format(v)} GW`], ["dem-ev", "demand", "ev", (v) => `${nf(1).format(v)} GW`],
+  ["dem-dc", "demand", "dc", (v) => `${nf(1).format(v)} GW`],
+  ["eco-gas", "eco", "gas", (v) => `${nf(0).format(v)}p/therm`], ["eco-carbon", "eco", "carbon", (v) => `£${nf(0).format(v)}/t`],
+  ["eco-intensity", "eco", "intensity", (v) => `${nf(2).format(v)} t`], ["eco-switch", "eco", "switch", (v) => `${nf(1).format(v)}×`],
+  ["link-gw", "link", "gw", (v) => `${nf(1).format(v)} GW`],
+];
 state.sim = SIM_DEFAULT();
 state.simResult = null;
 state.simPart1 = null;
@@ -674,6 +686,10 @@ function simRequest() {
     batteries: s.batteries.map(({ battery_id, lat, lon, zone, power_mw, energy_mwh, efficiency }) =>
       ({ battery_id, lat, lon, zone, power_mw, energy_mwh, efficiency, dispatcher: "rule" })),
     weather: { wind_scale: s.wind / 100 }, window: simWindow(), forecast_quality: s.quality,
+    subsea_link: s.link.zone ? { zone: s.link.zone, gw: s.link.gw, availability: 0.95 } : null,
+    demand_growth: { [s.demand.zone]: { heat_pumps_gw: s.demand.hp, evs_gw: s.demand.ev, data_centres_gw: s.demand.dc } },
+    gas_price_p_therm: s.eco.gas, carbon_price_gbp_t: s.eco.carbon, carbon_intensity_t_mwh: s.eco.intensity,
+    switch_off_price: { mode: "multiplier", value: s.eco.switch },
   };
 }
 
@@ -803,8 +819,32 @@ function syncControls() {
   $("forecast-quality").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.q === state.sim.quality)));
   $("window-preset").value = state.sim.preset;
   $("window-custom").hidden = state.sim.preset !== "custom";
+  for (const [id, group, key, fmt] of SIM_SLIDERS) { $(id).value = state.sim[group][key]; $(`${id}-out`).textContent = fmt(state.sim[group][key]); }
+  $("link-zone").value = state.sim.link.zone; $("link-size-row").hidden = !state.sim.link.zone;
+  $("demand-zone").value = state.sim.demand.zone;
   renderBatteryList();
   drawBatteryMarkers();
+}
+
+function drawSubsea() {   // the new cable as a curve out at sea (indicative route)
+  if (!map || !map.getSource) return;
+  const z = state.tab === "simulate" && state.sim.link.zone;
+  let features = [];
+  if (z) {
+    const [a, b] = LINK_ROUTES[z];
+    const ctrl = [Math.max(a[0], b[0]) + 1.6, (a[1] + b[1]) / 2];   // bow it east, offshore
+    const pts = [];
+    for (let t = 0; t <= 1.0001; t += 0.05) {
+      pts.push([(1 - t) ** 2 * a[0] + 2 * (1 - t) * t * ctrl[0] + t ** 2 * b[0], (1 - t) ** 2 * a[1] + 2 * (1 - t) * t * ctrl[1] + t ** 2 * b[1]]);
+    }
+    features = [{ type: "Feature", geometry: { type: "LineString", coordinates: pts }, properties: {} }];
+  }
+  const data = { type: "FeatureCollection", features };
+  if (map.getSource("subsea")) { map.getSource("subsea").setData(data); return; }
+  if (!map.loaded()) return;
+  map.addSource("subsea", { type: "geojson", data });
+  map.addLayer({ id: "subsea", type: "line", source: "subsea",
+    paint: { "line-color": C.planned, "line-width": 3, "line-dasharray": [1, 1.2] } });
 }
 
 function initSimControls() {
@@ -836,7 +876,14 @@ function initSimControls() {
   for (const id of ["window-start", "window-end"]) $(id).addEventListener("change", () => {
     state.sim.start = $("window-start").value; state.sim.end = $("window-end").value; scheduleSim();
   });
-  $("sim-reset").addEventListener("click", () => { state.sim = SIM_DEFAULT(); setPlacing(false); syncControls(); scheduleSim(); });
+  for (const [id, group, key, fmt] of SIM_SLIDERS) $(id).addEventListener("input", (e) => {
+    state.sim[group][key] = Number(e.target.value); $(`${id}-out`).textContent = fmt(state.sim[group][key]); scheduleSim();
+  });
+  $("link-zone").addEventListener("change", (e) => {
+    state.sim.link.zone = e.target.value; $("link-size-row").hidden = !e.target.value; drawSubsea(); scheduleSim();
+  });
+  $("demand-zone").addEventListener("change", (e) => { state.sim.demand.zone = e.target.value; scheduleSim(); });
+  $("sim-reset").addEventListener("click", () => { state.sim = SIM_DEFAULT(); setPlacing(false); syncControls(); drawSubsea(); scheduleSim(); });
   $("place-battery").addEventListener("click", () => setPlacing(!state.placing));
 }
 
@@ -910,6 +957,7 @@ function drawBatteryMarkers() {
 async function loadSimulate() {
   if (!simInit) { initSimControls(); simInit = true; syncControls(); }
   drawBatteryMarkers();
+  drawSubsea();
   if (!state.simResult) await runSim(); else { renderSim(); updateMap(); }
 }
 
@@ -1194,6 +1242,7 @@ function setTab(tab) {
   if (tab !== "simulate") setPlacing(false);
   if (tab !== "autopilot" && state.ap) stopApReplay();
   drawBatteryMarkers();
+  drawSubsea();
   if (tab === "predict") loadPredict(); else if (tab === "reveal") { renderReveal(); updateMap(); loadFarmDetail().catch(showError); }
   else if (tab === "simulate") loadSimulate();
   else if (tab === "autopilot") { loadAutopilot(); updateMap(); }
