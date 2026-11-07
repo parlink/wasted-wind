@@ -16,7 +16,8 @@ simulator consistent: it only simulates those farms.
 NESO's day-ahead "flow" is the unconstrained forecast (it is above the limit ~45% of the time on
 B4), so it is used only when nothing was curtailed, and capped at the limit. Missing or zero
 limits are filled (short gaps carried forward, then NESO's weekly limits, then interpolation)
-and those rows are marked `fallback`.
+and those rows are marked `fallback`. The weekly file's B4 value is "Min of B4 B5", a weekly
+*minimum*, so fallback limits err low.
 
     python -m pipeline.residual
 """
@@ -57,6 +58,8 @@ def parse_neso(raw: pd.DataFrame) -> pd.DataFrame:
     """
     df = raw.rename(columns={"Constraint Group": "group", "Date_ Time GMT_BST": "local",
                              "Limit_MW": "limit_mw", "Flow_MW": "flow_mw"})
+    # A verbatim republished row would otherwise be read as an extra (GMT) half hour.
+    df = df.drop_duplicates().reset_index(drop=True)
     local = pd.to_datetime(df["local"], format="ISO8601")
     first = df.assign(local=local).groupby(["group", "local"]).cumcount().to_numpy() == 0
     utc = (pd.DatetimeIndex(local).tz_localize("Europe/London", ambiguous=first,

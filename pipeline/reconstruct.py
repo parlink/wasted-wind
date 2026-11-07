@@ -37,6 +37,7 @@ MODO_2025_TWH = {"seagreen": 2.7, "moray_east": 1.7, "moray_west": 1.4}
 MIN_CURVE_SAMPLES = 500   # clean half hours needed to fit a BMU's power curve
 CURVE_BIN_MS = 0.5
 NON_DECREASING_UNTIL_MS = 20.0
+PLACEHOLDER_BID_GBP_MWH = 9999.0   # |bid| >= this means "never accept" in BOD
 
 log = logging.getLogger("reconstruct")
 
@@ -76,6 +77,8 @@ def minute_profiles(pn: pd.DataFrame, boa: pd.DataFrame, origin: pd.Timestamp, n
     boal = np.full(n, np.nan)
     so = np.zeros(n, bool)
     if len(boa):
+        if boa.soFlag.dtype != bool:  # a string "False" would otherwise read as True
+            raise TypeError(f"soFlag must be boolean, got {boa.soFlag.dtype}")
         boa = boa.sort_values(["acceptanceTime", "acceptanceNumber"])
         rank = boa.groupby(["acceptanceTime", "acceptanceNumber"], sort=False).ngroup().to_numpy()
         seg_n = np.maximum(_minutes(boa.timeTo, origin) - _minutes(boa.timeFrom, origin), 0)
@@ -139,10 +142,14 @@ def settlement_fields(period_start: pd.DatetimeIndex):
 def bid_price(bands: pd.DataFrame, cut_mw: float) -> float:
     """Volume-weighted bid price for turning down cut_mw, filling bid bands -1, -2, ... in order.
 
+    Uses the *submitted* BOD bid bands for the period (Elexon publishes no per-acceptance price),
+    skipping +/-9999 "never accept" placeholders.
+
     BOD levels are cumulative MW relative to the notified level, so band -k covers turn-down
     between |level(-k+1)| and |level(-k)|. Volume beyond the last band is priced at the last band.
     """
-    neg = bands[bands.pairId < 0].sort_values("pairId", ascending=False)
+    neg = bands[(bands.pairId < 0) & (bands.bid.abs() < PLACEHOLDER_BID_GBP_MWH)]
+    neg = neg.sort_values("pairId", ascending=False)
     if neg.empty or not cut_mw > 0:
         return np.nan
     upper = np.maximum.accumulate(np.abs(neg.levelFrom.to_numpy(float)))  # guard odd submissions
@@ -157,7 +164,8 @@ def period_bid_prices(bod: pd.DataFrame, cuts: pd.DataFrame) -> pd.Series:
     cuts = cuts[cuts.curtailed_mwh_a > 0]
     if cuts.empty or bod.empty:
         return pd.Series(dtype=float)
-    bod = bod[bod.pairId < 0].assign(period_start=bod.timeFrom.dt.floor("30min"))
+    bod = bod[(bod.pairId < 0) & (bod.bid.abs() < PLACEHOLDER_BID_GBP_MWH)]
+    bod = bod.assign(period_start=bod.timeFrom.dt.floor("30min"))
     bod = bod.drop_duplicates(["period_start", "pairId"], keep="last")
     bod = bod[bod.period_start.isin(cuts.period_start)]
     cut_mw = cuts.set_index("period_start").curtailed_mwh_a * 2   # mean MW over the half hour

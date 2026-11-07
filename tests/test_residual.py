@@ -123,3 +123,13 @@ OUT = ROOT / "data" / "processed" / "residual.parquet"
 @pytest.mark.skipif(not OUT.exists(), reason="residual.parquet not built")
 def test_built_output_matches_contract():
     rs.check_output(pd.read_parquet(OUT))
+
+
+def test_neso_republished_duplicate_row_is_not_read_as_gmt():
+    # A row repeated verbatim on the autumn day must not become a third, GMT-labelled period.
+    raw = pd.DataFrame({"Constraint Group": ["SCOTEX"] * 3,
+                        "Date_ Time GMT_BST": ["2025-10-26T01:00:00"] * 3,
+                        "Limit_MW": [3, 3, 4], "Flow_MW": [0, 0, 0]})
+    out = rs.parse_neso(raw)
+    assert len(out) == 2
+    assert sorted(out.period_start) == [pd.Timestamp("2025-10-26T00:00Z"), pd.Timestamp("2025-10-26T01:00Z")]
