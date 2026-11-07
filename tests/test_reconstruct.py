@@ -169,3 +169,31 @@ def test_2025_totals_within_20pct_of_modo(built):
     totals = rc.annual_totals_twh(built, 2025)
     for farm, modo_twh in rc.MODO_2025_TWH.items():
         assert totals[farm] == pytest.approx(modo_twh, rel=0.20), (farm, totals[farm])
+
+
+# ---------- review follow-ups (#23) ----------
+
+def test_bid_price_ignores_placeholder_bands():
+    # +/-9999 means "never accept"; it must not pull the price to about -9,999 GBP/MWh.
+    bands = pd.DataFrame({"pairId": [-1, -2], "levelFrom": [-100, -300], "bid": [-40.0, -9999.0]})
+    assert rc.bid_price(bands, cut_mw=250) == pytest.approx(-40.0)
+
+
+def test_bid_price_null_when_only_placeholders():
+    bands = pd.DataFrame({"pairId": [-1], "levelFrom": [-300], "bid": [-9999.0]})
+    assert np.isnan(rc.bid_price(bands, cut_mw=50))
+
+
+def test_so_flag_object_column_of_bools_and_nulls_is_accepted():
+    # Review #25: a parquet bool column with a null reads back as object dtype.
+    boa = boa_rows((1, 5, 20, 40, 40, True), (2, 30, 45, 40, 40, True)).astype({"soFlag": object})
+    boa.loc[1, "soFlag"] = None                       # null flag = not a constraint action
+    out = periods(pn_rows((0, 60, 100, 100)), boa)
+    assert out.iloc[0].curtailed_mwh_a == pytest.approx(15.0)
+    assert out.iloc[1].curtailed_mwh_a == 0.0
+
+
+def test_so_flag_must_be_boolean():
+    boa = boa_rows((1, 5, 20, 40, 40, True)).astype({"soFlag": str})
+    with pytest.raises(TypeError):
+        periods(pn_rows((0, 60, 100, 100)), boa)

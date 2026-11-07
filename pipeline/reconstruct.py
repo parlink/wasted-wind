@@ -37,6 +37,7 @@ MODO_2025_TWH = {"seagreen": 2.7, "moray_east": 1.7, "moray_west": 1.4}
 MIN_CURVE_SAMPLES = 500   # clean half hours needed to fit a BMU's power curve
 CURVE_BIN_MS = 0.5
 NON_DECREASING_UNTIL_MS = 20.0
+PLACEHOLDER_BID_GBP_MWH = 9999.0   # |bid| >= this means "never accept" in BOD
 
 log = logging.getLogger("reconstruct")
 
@@ -63,6 +64,18 @@ def _minutes(t: pd.Series, origin: pd.Timestamp) -> np.ndarray:
     return ((t - origin) // pd.Timedelta(minutes=1)).to_numpy(np.int64)
 
 
+def _bool_flag(s: pd.Series) -> pd.Series:
+    """soFlag as bool. A parquet bool column with nulls reads back as object; nulls -> False
+    (not a constraint action). Anything that isn't a bool (e.g. the string "False", which
+    would read as True) raises TypeError."""
+    if s.dtype == bool:
+        return s
+    vals = s.dropna()
+    if not vals.map(lambda v: isinstance(v, (bool, np.bool_))).all():
+        raise TypeError(f"soFlag must be boolean, got {s.dtype} with non-bool values")
+    return s.fillna(False).astype(bool)
+
+
 def minute_profiles(pn: pd.DataFrame, boa: pd.DataFrame, origin: pd.Timestamp, n: int):
     """One BMU's PN, winning accepted level and its soFlag on a grid of n minutes from origin."""
     pn_min = np.full(n, np.nan)
@@ -76,6 +89,7 @@ def minute_profiles(pn: pd.DataFrame, boa: pd.DataFrame, origin: pd.Timestamp, n
     boal = np.full(n, np.nan)
     so = np.zeros(n, bool)
     if len(boa):
+        boa = boa.assign(soFlag=_bool_flag(boa.soFlag))
         boa = boa.sort_values(["acceptanceTime", "acceptanceNumber"])
         rank = boa.groupby(["acceptanceTime", "acceptanceNumber"], sort=False).ngroup().to_numpy()
         seg_n = np.maximum(_minutes(boa.timeTo, origin) - _minutes(boa.timeFrom, origin), 0)
@@ -139,10 +153,16 @@ def settlement_fields(period_start: pd.DatetimeIndex):
 def bid_price(bands: pd.DataFrame, cut_mw: float) -> float:
     """Volume-weighted bid price for turning down cut_mw, filling bid bands -1, -2, ... in order.
 
+    Uses the *submitted* BOD bid bands for the period (Elexon publishes no per-acceptance price),
+    skipping +/-9999 "never accept" placeholders.
+
     BOD levels are cumulative MW relative to the notified level, so band -k covers turn-down
     between |level(-k+1)| and |level(-k)|. Volume beyond the last band is priced at the last band.
+    Placeholder bands are removed before filling, so their volume goes to the next real band
+    (a placeholder at band -1 means band -2's price is used from the first MW).
     """
-    neg = bands[bands.pairId < 0].sort_values("pairId", ascending=False)
+    neg = bands[(bands.pairId < 0) & (bands.bid.abs() < PLACEHOLDER_BID_GBP_MWH)]
+    neg = neg.sort_values("pairId", ascending=False)
     if neg.empty or not cut_mw > 0:
         return np.nan
     upper = np.maximum.accumulate(np.abs(neg.levelFrom.to_numpy(float)))  # guard odd submissions
@@ -153,11 +173,16 @@ def bid_price(bands: pd.DataFrame, cut_mw: float) -> float:
 
 
 def period_bid_prices(bod: pd.DataFrame, cuts: pd.DataFrame) -> pd.Series:
-    """bid_price_gbp_mwh per period_start for periods with Method A waste (one BMU)."""
+    """bid_price_gbp_mwh per period_start for periods with Method A waste (one BMU).
+
+    Periods with no real (non-placeholder) bid band are simply absent; callers map with
+    `df.period_start.map(...)`, which turns them into NaN as CONTRACT §2 requires.
+    """
     cuts = cuts[cuts.curtailed_mwh_a > 0]
     if cuts.empty or bod.empty:
         return pd.Series(dtype=float)
-    bod = bod[bod.pairId < 0].assign(period_start=bod.timeFrom.dt.floor("30min"))
+    bod = bod[(bod.pairId < 0) & (bod.bid.abs() < PLACEHOLDER_BID_GBP_MWH)]
+    bod = bod.assign(period_start=bod.timeFrom.dt.floor("30min"))
     bod = bod.drop_duplicates(["period_start", "pairId"], keep="last")
     bod = bod[bod.period_start.isin(cuts.period_start)]
     cut_mw = cuts.set_index("period_start").curtailed_mwh_a * 2   # mean MW over the half hour
