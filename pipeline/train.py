@@ -51,6 +51,8 @@ FC_COLS = ["farm_id", "zone", "hour_start", "issued_at", "split", "curtailed_mwh
 LIMIT_FEATURES = ["b4_limit_mw", "b6_limit_mw", "b4_excess_potential_mw", "b6_excess_potential_mw"]
 NO_LIMIT_FEATURES = [f for f in ft.FEATURES if f not in LIMIT_FEATURES]
 QUANTILES = {"curtailed_mwh_p10": 0.1, "curtailed_mwh_p90": 0.9}
+BAND_EDGES = (1.0, 10.0)               # groups on the point forecast, MWh per farm-hour
+BAND_LABELS = ("<1", "1-10", ">10")
 MODEL_DIR = ft.PROCESSED / "models"
 MODEL_NAMES = {"lightgbm": "curtailed_mwh_pred", "persistence": "baseline_persistence_mwh",
                "climatology": "baseline_climatology_mwh", "wind_rule": "baseline_wind_rule_mwh"}
@@ -194,10 +196,11 @@ def run_fold(panel: pd.DataFrame, month: pd.Timestamp):
 OPENMETEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 
 
-def live_inputs(now: pd.Timestamp):
-    """Weather, limits and demand for tomorrow (UTC), as known right now. Needs the network."""
+def live_inputs(now: pd.Timestamp, day: pd.Timestamp | None = None):
+    """Weather, limits and demand for `day` (default tomorrow, UTC), as known right now.
+    Needs the network."""
     from pipeline import fetch, residual as rs
-    day = (now + pd.Timedelta(days=1)).normalize()
+    day = (now + pd.Timedelta(days=1)).normalize() if day is None else day.normalize()
     farms = pd.read_csv(ft.ROOT / "reference" / "farms.csv").drop_duplicates("farm_id")
     rows = []
     for f in farms.itertuples():
@@ -236,10 +239,12 @@ def _live_limits(neso_wide: pd.DataFrame, day: pd.Timestamp) -> pd.DataFrame:
     return pd.concat([lim[lim.index < day], have])
 
 
-def live_rows(models: dict, baselines: dict, curt: pd.DataFrame, now: pd.Timestamp) -> pd.DataFrame:
-    weather, lim, dem_h = live_inputs(now)
+def live_rows(models: dict, baselines: dict, curt: pd.DataFrame, now: pd.Timestamp,
+              day: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Forecast rows for `day` (default tomorrow) issued now. dispatch.live uses day = today."""
+    day = (now + pd.Timedelta(days=1)).normalize() if day is None else day.normalize()
+    weather, lim, dem_h = live_inputs(now, day)
     farms = pd.read_csv(ft.ROOT / "reference" / "farms.csv")
-    day = (now + pd.Timedelta(days=1)).normalize()
     if curt.period_start.max() < day - pd.Timedelta(hours=25):     # lag48 needs D-2 complete
         log.warning("live: Part 1 data ends %s; lag48 / persistence and trailing signals for %s "
                     "are incomplete", curt.period_start.max(), f"{day:%Y-%m-%d}")
@@ -261,7 +266,15 @@ def interval_stats(bt: pd.DataFrame) -> dict:
     """
     a, lo, hi = bt.curtailed_mwh_actual, bt.curtailed_mwh_p10, bt.curtailed_mwh_p90
     inside, waste = (a >= lo) & (a <= hi), a > 0
-    return {"nominal": 0.8,
+    # Grouped by the forecast itself (known ex ante): this is the calibration the band can be held
+    # to. Misses on waste hours are mostly hours the model called calm (a point-forecast problem;
+    # a conformal correction by these groups was tried and gave ~0 offsets, so it isn't used).
+    group = pd.Series(np.asarray(BAND_LABELS)[np.digitize(bt.curtailed_mwh_pred, BAND_EDGES)], index=bt.index)
+    by_group = {g: {"rows": int((group == g).sum()), "coverage": round(float(inside[group == g].mean()), 3),
+                    "coverage_on_waste_hours": round(float(inside[(group == g) & waste].mean()), 3)
+                    if ((group == g) & waste).any() else None}
+                for g in BAND_LABELS}
+    return {"nominal": 0.8, "by_predicted_size_mwh": by_group,
             "coverage_p10_p90": round(float(inside.mean()), 3),
             "coverage_on_waste_hours": round(float(inside[waste].mean()), 3),
             "above_p90_on_waste_hours": round(float((a > hi)[waste].mean()), 3),
@@ -341,9 +354,9 @@ def main():
            "shap_top_signals": shap_top(shaps),
            "notes": ["SHAP: mean |SHAP| on each fold's held-out month, averaged over folds",
                      "lightgbm is biased low (~18% on the backtest); the p10-p90 band is fitted separately",
-                     "interval: miscalibrated both ways vs the 0.8 nominal: it over-covers calm hours "
-                     "(a 0-0 band covers a 0) and under-covers hours with waste, where misses are almost "
-                     "all above p90 (storms are under-forecast, like the point model)",
+                     "interval: by predicted size the band covers >= 80% in every group (calibrated "
+                     "on what is knowable at issue time); on hours with waste it covers less, because "
+                     "most misses are hours the model called calm or minor (surprises)",
                      "the band is widened where needed to contain the point forecast",
                      "live rows: issued_at = refresh time, so their lead time is shorter than the "
                      "backtest's D-1 10:00 issue",

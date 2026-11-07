@@ -12,6 +12,7 @@ against reality:
   forecast    as reactive, plus our day-ahead waste forecast (issued D-1 10:00)
   perfect/rule  the same rules fed the actual waste, price and headroom ("rule-based with
               hindsight"; not a ceiling)
+  reactive/lp, forecast/lp  the same plans made by the LP dispatcher (dispatch.optimiser.plan_day)
   perfect/lp  dispatch.optimiser.hindsight_bound: the best any battery could have done with
               perfect knowledge (a linear programme over the whole period); capture ratios use it
 
@@ -41,6 +42,7 @@ import numpy as np
 import pandas as pd
 
 from dispatch import rule_based
+from dispatch import optimiser
 from dispatch.optimiser import hindsight_bound
 from dispatch.rule_based import H, plan_day
 
@@ -160,7 +162,10 @@ def load_inputs():
 
 # ---------- replay ----------
 
-def replay(battery: dict, strategy: str, hist, price, head_zone, f) -> pd.DataFrame:
+DISPATCHERS = {"rule": plan_day, "lp": optimiser.plan_day}
+
+
+def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: str = "rule") -> pd.DataFrame:
     days = len(hist) // 48 - PRE_DAYS          # the first PRE_DAYS days are history only
     soc, rows = 0.0, []
     for d in range(PRE_DAYS, PRE_DAYS + days):
@@ -179,15 +184,21 @@ def replay(battery: dict, strategy: str, hist, price, head_zone, f) -> pd.DataFr
                 sig = np.zeros(48) if strategy == "reactive" else np.nan_to_num(f["fc"][sl])
                 exp_p = expected_price(price, d)
                 exp_h = head_zone[(d - 2) * 48:(d - 1) * 48]    # same half hour on D-2
-            plan = plan_day(battery, sig, exp_p, exp_h, soc)
+            plan = DISPATCHERS[dispatcher](battery, sig, exp_p, exp_h, soc)
             out = execute(battery, plan, actual_w, actual_p, actual_h, soc, plan["reason"])
             soc = float(out["soc_mwh"][-1])
         rows.append(pd.DataFrame({"period_start": hist[sl], "plan_issued_at": issued, **out}))
     df = pd.concat(rows, ignore_index=True)
     for k in ("battery_id", "farm_id", "zone"):
         df[k] = battery[k]
-    df["strategy"], df["dispatcher"] = strategy, "rule"
+    df["strategy"], df["dispatcher"] = strategy, dispatcher
     return df[COLUMNS]
+
+
+def keep_live_rows(existing: pd.DataFrame, new: pd.DataFrame, backtest_end: pd.Timestamp) -> pd.DataFrame:
+    """New backtest rows plus any live re-plans (dispatch.live) beyond the backtest window."""
+    live = existing[existing.period_start >= backtest_end]
+    return pd.concat([new, live], ignore_index=True)[COLUMNS]
 
 
 def lp_rows(battery: dict, hist, price, head_zone, f) -> pd.DataFrame:
@@ -228,9 +239,14 @@ def main():
     bats = [dict(b, plan_waste_fraction=tuning["chosen"]) for b in BATTERIES]
     frames = [replay(b, s, hist, price, head[b["zone"]], farm[b["battery_id"]])
               for b in bats for s in STRATEGIES]
+    frames += [replay(b, s, hist, price, head[b["zone"]], farm[b["battery_id"]], "lp")
+               for b in bats for s in ("reactive", "forecast")]
     frames += [lp_rows(b, hist, price, head[b["zone"]], farm[b["battery_id"]]) for b in bats]
     sched = pd.concat(frames, ignore_index=True)
-    sched.to_parquet(PROCESSED / "schedules.parquet", index=False)
+    path = PROCESSED / "schedules.parquet"
+    backtest_end = periods[-1] + pd.Timedelta(minutes=30)
+    full = keep_live_rows(pd.read_parquet(path), sched, backtest_end) if path.exists() else sched
+    full.to_parquet(path, index=False)
 
     sched["key"] = sched.strategy + "/" + sched.dispatcher
     avoided = {}
@@ -241,7 +257,8 @@ def main():
             avoided[key] = avoided.get(key, 0.0) + float((g.captured_curtailment_mwh
                                                           * g.period_start.map(ap).fillna(0)).sum())
     tot = sched.groupby("key")[["captured_curtailment_mwh", "revenue_gbp"]].sum()
-    keys = ["do_nothing/rule", "reactive/rule", "forecast/rule", "perfect/rule", "perfect/lp"]
+    keys = ["do_nothing/rule", "reactive/rule", "forecast/rule", "reactive/lp", "forecast/lp",
+            "perfect/rule", "perfect/lp"]
 
     ratios = capture_ratios(tot.revenue_gbp.to_dict())
     hold = {k: _revenue(sched[sched.key == k], HOLDOUT_MONTHS) for k in keys}
