@@ -15,7 +15,7 @@ const BOUNDARIES = {
 };
 
 const state = {
-  tab: "reveal", farm: null, mode: "all", day: 0, days: [], playTimer: null,
+  tab: "reveal", farm: null, mode: "all", idx: 0, periods: [], anchor: null, days: [], playTimer: null,
   farms: [], reveal: null, boundaries: null, tomorrow: null, metrics: null,
 };
 const charts = {};
@@ -77,18 +77,45 @@ const hourFmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-d
 const isoDay = (d) => d.toISOString().slice(0, 10);
 const farmName = (id) => (state.farms.find((f) => f.farm_id === id) || {}).farm_name || id;
 
+const monthFmt = new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
+const DAY_MS = 86400000;
+
+// Reveal's time windows: every period of the chosen length within the data, as [start, end) UTC days
+function buildPeriods(mode) {
+  if (!state.days.length || mode === "all") return [];
+  const first = state.days[0], end = new Date(state.days[state.days.length - 1].getTime() + DAY_MS);
+  const out = [];
+  if (mode === "day" || mode === "week") {
+    const step = mode === "day" ? 1 : 7;
+    for (let d = first; d < end; d = new Date(d.getTime() + step * DAY_MS)) {
+      const e = new Date(Math.min(d.getTime() + step * DAY_MS, end.getTime()));
+      out.push({ start: d, end: e, label: mode === "day" ? dayFmt.format(d)
+        : `${dayFmt.format(d)} – ${dayFmt.format(new Date(e.getTime() - DAY_MS))}` });
+    }
+  } else {
+    let d = new Date(Date.UTC(first.getUTCFullYear(), mode === "year" ? 0 : first.getUTCMonth(), 1));
+    while (d < end) {
+      const next = mode === "year" ? new Date(Date.UTC(d.getUTCFullYear() + 1, 0, 1))
+        : new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
+      const s = d < first ? first : d, e = next > end ? end : next;
+      const partial = s > d || e < next;
+      const label = mode === "year" ? String(d.getUTCFullYear()) : monthFmt.format(d);
+      out.push({ start: s, end: e, label: partial ? `${label} (${dayFmt.format(s)} – ${dayFmt.format(new Date(e.getTime() - DAY_MS))})` : label });
+      d = next;
+    }
+  }
+  return out;
+}
+function currentPeriod() { return state.mode === "all" ? null : state.periods[state.idx]; }
 function windowParams() {
-  if (state.mode !== "day" || !state.days.length) return "";
-  const d = state.days[state.day];
-  const next = new Date(d.getTime() + 86400000);
-  return `?start=${isoDay(d)}&end=${isoDay(next)}`;
+  const p = currentPeriod();
+  return p ? `?start=${isoDay(p.start)}&end=${isoDay(p.end)}` : "";
 }
 function windowText() {
-  if (state.mode !== "day" || !state.days.length) {
-    if (!state.days.length) return "";
-    return `${dayFmt.format(state.days[0])} – ${dayFmt.format(state.days[state.days.length - 1])}`;
-  }
-  return dayFmt.format(state.days[state.day]);
+  const p = currentPeriod();
+  if (p) return p.label;
+  if (!state.days.length) return "";
+  return `${dayFmt.format(state.days[0])} – ${dayFmt.format(state.days[state.days.length - 1])}`;
 }
 
 function legend(node, items) {
@@ -355,6 +382,29 @@ function renderReveal() {
     { color: C.waste, selected: state.farm, onClick: selectFarm, fmt: fmtEnergy });
 }
 
+function monthlySums(daily, keys) {
+  const out = new Map();
+  for (const [day, row] of daily) {
+    const m = day.slice(0, 7);
+    if (!out.has(m)) out.set(m, Object.fromEntries(keys.map((k) => [k, null])));
+    const b = out.get(m);
+    for (const k of keys) if (row[k] != null) b[k] = (b[k] || 0) + row[k];
+  }
+  return out;
+}
+
+function weeklySums(daily, keys) {   // 7-day buckets from the first day
+  const out = new Map();
+  let i = 0, bucket = null;
+  for (const [day, row] of daily) {
+    if (i % 7 === 0) { bucket = day; out.set(bucket, Object.fromEntries(keys.map((k) => [k, null]))); }
+    const b = out.get(bucket);
+    for (const k of keys) if (row[k] != null) b[k] = (b[k] || 0) + row[k];
+    i += 1;
+  }
+  return out;
+}
+
 function dailySums(series, keys) {
   const out = new Map();
   for (const p of series) {
@@ -386,7 +436,15 @@ async function loadFarmDetail() {
   let s = res.series;
   const keys = ["planned_mwh", "accepted_mwh", "metered_mwh", "curtailed_mwh_a", "curtailed_mwh_b"];
   let labels, unit;
-  if (s.length > 1500) {        // long windows: daily totals keep the chart readable
+  if (s.length > 48 * 400) {    // over ~13 months: monthly totals
+    const d = monthlySums(dailySums(s, keys), keys);
+    labels = [...d.keys()].map((k) => monthFmt.format(new Date(`${k}-01T00:00:00Z`)));
+    s = [...d.values()]; unit = "MWh per month";
+  } else if (s.length > 48 * 100) {    // over ~100 days: weekly totals (a year is 52 points)
+    const d = weeklySums(dailySums(s, keys), keys);
+    labels = [...d.keys()].map((k) => `w/c ${dayFmt.format(new Date(k))}`);
+    s = [...d.values()]; unit = "MWh per week";
+  } else if (s.length > 48 * 10) {   // over ~10 days: daily totals
     const d = dailySums(s, keys);
     labels = [...d.keys()].map((k) => dayFmt.format(new Date(k)));
     s = [...d.values()]; unit = "MWh per day";
@@ -410,7 +468,12 @@ async function loadFarmDetail() {
   ], { yLabel: unit });
 
   // Method A vs B, daily
-  const daily = dailySums(res.series, ["curtailed_mwh_a", "curtailed_mwh_b"]);
+  let daily = dailySums(res.series, ["curtailed_mwh_a", "curtailed_mwh_b"]);
+  // long windows: coarser points, or the two lines turn into a smear
+  const step = daily.size > 400 ? "month" : daily.size > 120 ? "week" : "day";
+  if (step === "month") daily = monthlySums(daily, ["curtailed_mwh_a", "curtailed_mwh_b"]);
+  if (step === "week") daily = weeklySums(daily, ["curtailed_mwh_a", "curtailed_mwh_b"]);
+  const weekly = step !== "day";
   const dl = [...daily.keys()];
   const a = dl.map((k) => daily.get(k).curtailed_mwh_a), b = dl.map((k) => daily.get(k).curtailed_mwh_b);
   const hasB = b.some((v) => v != null);
@@ -418,14 +481,14 @@ async function loadFarmDetail() {
     { label: "From grid switch-off orders", color: C.planned, kind: "line" },
     ...(hasB ? [{ label: "From weather (wind speed vs metered output)", color: C.waste, kind: "line" }] : []),
   ]);
-  lineChart("ab-chart", dl.map((k) => dayFmt.format(new Date(k))), [
+  lineChart("ab-chart", dl.map((k) => step === "month" ? monthFmt.format(new Date(`${k}-01T00:00:00Z`)) : dayFmt.format(new Date(k))), [
     { label: "Method A", data: a, borderColor: C.planned, pointRadius: dl.length < 40 ? 3 : 0, pointBackgroundColor: C.planned },
     ...(hasB ? [{ label: "Method B", data: b, borderColor: C.waste, pointRadius: dl.length < 40 ? 3 : 0, pointBackgroundColor: C.waste }] : []),
-  ], { yLabel: "MWh per day" });
+  ], { yLabel: `MWh per ${step}` });
   const r = hasB ? pearson(a, b) : null;
   $("ab-note").textContent = !hasB ? "The weather cross-check isn't available for this farm."
     : r == null ? "Not enough days to compare the two methods."
-    : `The two estimates move together day to day: correlation ${r.toFixed(2)} (1 = perfectly, above 0.6 is good).`;
+    : `The two estimates move together ${step} to ${step}: correlation ${r.toFixed(2)} (1 = perfectly, above 0.6 is good).`;
 }
 
 function selectFarm(id) {
@@ -443,23 +506,35 @@ function selectFarm(id) {
 // ---------- window controls ----------
 
 function setMode(mode) {
+  // keep looking at the same moment: the new period is the one containing the old one's start
+  const cur = currentPeriod();
+  if (cur) state.anchor = cur.start;
+  if (!state.anchor && state.days.length) state.anchor = state.days[state.days.length - 1];
   state.mode = mode;
+  state.periods = buildPeriods(mode);
+  const i = state.periods.findIndex((p) => state.anchor >= p.start && state.anchor < p.end);
+  state.idx = i >= 0 ? i : Math.max(0, state.periods.length - 1);
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
-  $("day-slider").disabled = mode !== "day";
+  const slider = $("day-slider");
+  slider.disabled = mode === "all";
+  slider.max = Math.max(0, state.periods.length - 1);
+  slider.value = state.idx;
+  $("play").disabled = mode === "all" || state.periods.length < 2;
   loadReveal();
 }
 function stopPlay() {
   if (state.playTimer) clearInterval(state.playTimer);
   state.playTimer = null;
-  $("play").textContent = "▶"; $("play").setAttribute("aria-label", "Play through days");
+  $("play").textContent = "▶"; $("play").setAttribute("aria-label", "Play through");
 }
 function togglePlay() {
   if (state.playTimer) return stopPlay();
-  if (state.mode !== "day") setMode("day");
+  if (state.mode === "all") setMode("day");
+  if (state.idx >= state.periods.length - 1) { state.idx = -1; }   // at the end: play from the start
   $("play").textContent = "❚❚"; $("play").setAttribute("aria-label", "Pause");
   state.playTimer = setInterval(() => {
-    if (state.day >= state.days.length - 1) return stopPlay();
-    state.day += 1; $("day-slider").value = state.day; loadReveal();
+    if (state.idx >= state.periods.length - 1) return stopPlay();
+    state.idx += 1; $("day-slider").value = state.idx; loadReveal();
   }, 1400);
 }
 
@@ -1142,7 +1217,11 @@ async function boot() {
   document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.addEventListener("click", () => { stopPlay(); setMode(b.dataset.mode); }));
   $("play").addEventListener("click", togglePlay);
-  $("day-slider").addEventListener("input", (e) => { stopPlay(); state.day = Number(e.target.value); if (state.mode !== "day") setMode("day"); else loadReveal(); });
+  $("day-slider").addEventListener("input", (e) => {
+    stopPlay(); state.idx = Number(e.target.value);
+    const p = currentPeriod(); if (p) state.anchor = p.start;
+    loadReveal();
+  });
   $("farm-clear").addEventListener("click", () => selectFarm(state.farm));
   $("day-slider").disabled = true;
   try {
@@ -1150,7 +1229,7 @@ async function boot() {
     state.farms = farms.farms;
     const start = new Date(health.range.start), end = new Date(health.range.end);
     for (let d = new Date(start); d < end; d = new Date(d.getTime() + 86400000)) state.days.push(d);
-    $("day-slider").max = Math.max(0, state.days.length - 1);
+    $("play").disabled = true;
     noteSource("wind farm waste", health.meta);
     $("source-tag").title = `Generated ${health.meta.generated_at}`;
     // The panel must never wait on map tiles (venue Wi-Fi): load both, draw the map when ready.
