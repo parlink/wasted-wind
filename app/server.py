@@ -1,0 +1,432 @@
+"""Wasted Wind API. Endpoints and shapes: docs/CONTRACT.md §7. Run: make serve
+
+Tables from app.data are cached and shared: never modify them in place.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+from collections import OrderedDict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Literal, Optional
+
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
+
+from app import contract, data
+
+app = FastAPI(title="Wasted Wind", version="0.1")
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+ISO = "%Y-%m-%dT%H:%M:%SZ"
+
+
+# ---------- helpers ----------
+
+def meta(*sources: str, **extra) -> dict:
+    source = "fixtures" if "fixtures" in sources else "processed"
+    return {"data_version": data.data_version(source), "source": source,
+            "generated_at": datetime.now(timezone.utc).strftime(ISO), "estimated": True, **extra}
+
+
+def num(x, nd: int = 3):
+    """Plain float rounded, or None for NaN/missing."""
+    if x is None or pd.isna(x):
+        return None
+    return round(float(x), nd)
+
+
+def iso(ts) -> Optional[str]:
+    return None if ts is None or pd.isna(ts) else pd.Timestamp(ts).tz_convert("UTC").strftime(ISO)
+
+
+def records(df: pd.DataFrame, nd: int = 3) -> list[dict]:
+    """DataFrame -> JSON-safe records: UTC times as ISO 'Z' strings, NaN as null."""
+    out = df.copy()
+    for c in out.columns:
+        if isinstance(out[c].dtype, pd.DatetimeTZDtype):
+            out[c] = out[c].dt.strftime(ISO)
+        elif pd.api.types.is_float_dtype(out[c]):
+            out[c] = out[c].round(nd)
+    return json.loads(out.to_json(orient="records"))
+
+
+def parse_ts(value: Optional[str], name: str) -> Optional[pd.Timestamp]:
+    if value is None or value == "":
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except (ValueError, TypeError):
+        raise HTTPException(400, f"{name}={value!r} is not an ISO date or datetime")
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+
+def window(df: pd.DataFrame, col: str, start: Optional[str], end: Optional[str]) -> pd.DataFrame:
+    """Rows with start <= df[col] < end (UTC). None = open-ended."""
+    s, e = parse_ts(start, "start"), parse_ts(end, "end")
+    mask = pd.Series(True, index=df.index)
+    if s is not None:
+        mask &= df[col] >= s
+    if e is not None:
+        mask &= df[col] < e
+    return df[mask]
+
+
+def window_years(df: pd.DataFrame, start, end) -> float:
+    s = parse_ts(start, "start") or df["period_start"].min()
+    e = parse_ts(end, "end") or (df["period_start"].max() + pd.Timedelta(minutes=30))
+    return max((e - s).total_seconds(), 1800) / (365.25 * 86400)
+
+
+def b4_binding_periods(resid: pd.DataFrame) -> pd.Index:
+    r = resid[(resid["zone"] == "north_scotland") & (resid["residual_method"] == "binding")]
+    return pd.Index(r["period_start"].unique())
+
+
+def boundary_split_mwh(curt: pd.DataFrame, resid: pd.DataFrame) -> dict:
+    """Attribute waste to a boundary: North Scotland waste while B4 was full -> B4, all else -> B6.
+
+    Approximate: the reconstruction can't see which boundary caused each acceptance.
+    """
+    in_b4 = (curt["zone"] == "north_scotland") & curt["period_start"].isin(b4_binding_periods(resid))
+    b4 = float(curt.loc[in_b4, "curtailed_mwh_a"].sum())
+    return {"B4": b4, "B6": float(curt["curtailed_mwh_a"].sum()) - b4}
+
+
+def cost_totals(curt: pd.DataFrame, resid: pd.DataFrame, years: float,
+                gas_p_therm=contract.DEFAULT_GAS_P_THERM, carbon_gbp_t=contract.DEFAULT_CARBON_GBP_T,
+                intensity=contract.DEFAULT_CARBON_INTENSITY_T_MWH) -> dict:
+    mwh = float(curt["curtailed_mwh_a"].sum())
+    payments = float((curt["curtailed_mwh_a"] * -curt["bid_price_gbp_mwh"]).fillna(0).sum())
+    split = boundary_split_mwh(curt, resid)
+    return {
+        "curtailed_twh": mwh / 1e6,
+        "by_boundary_twh": {k: v / 1e6 for k, v in split.items()},
+        "payments_gbp": payments,
+        "replacement_gas_gbp": mwh * contract.replacement_gbp_mwh(gas_p_therm, carbon_gbp_t, intensity),
+        "co2_t": mwh * intensity,
+        "homes_equiv": mwh / contract.MWH_PER_HOME_PER_YEAR / years,
+    }
+
+
+def round_totals(t: dict) -> dict:
+    return {k: ({kk: num(vv, 9) for kk, vv in v.items()} if isinstance(v, dict)
+                else num(v, 9 if k == "curtailed_twh" else 1)) for k, v in t.items()}
+
+
+def known_farm(farm_id: str) -> None:
+    farms, _ = data.table("farms.csv")
+    if farm_id not in set(farms["farm_id"]):
+        raise HTTPException(404, f"unknown farm_id {farm_id!r}")
+
+
+# ---------- health and farms ----------
+
+@app.get("/api/health")
+def health():
+    curt, src = data.table("curtailment.parquet")
+    return {"status": "ok",
+            "range": {"start": iso(curt["period_start"].min()),
+                      "end": iso(curt["period_start"].max() + pd.Timedelta(minutes=30))},
+            "meta": meta(src)}
+
+
+@app.get("/api/farms")
+def farms():
+    df, src = data.table("farms.csv")
+    out = []
+    for fid, g in df.groupby("farm_id", sort=False):
+        cap = g["capacity_mw"].sum()
+        w = g["capacity_mw"] / cap if cap else 1 / len(g)
+        out.append({"farm_id": fid, "farm_name": g["farm_name"].iloc[0],
+                    "lat": num((g["lat"] * w).sum(), 5), "lon": num((g["lon"] * w).sum(), 5),
+                    "capacity_mw": num(cap, 1), "zone": g["zone"].iloc[0],
+                    "site_type": g["site_type"].iloc[0], "bmu_ids": g["bmu_id"].tolist()})
+    return {"farms": out, "meta": meta(src)}
+
+
+# ---------- reveal ----------
+
+@app.get("/api/reveal/summary")
+def reveal_summary(start: Optional[str] = None, end: Optional[str] = None):
+    curt_all, s1 = data.table("curtailment.parquet")
+    resid, s2 = data.table("residual.parquet")
+    curt = window(curt_all, "period_start", start, end)
+    totals = round_totals(cost_totals(curt, resid, window_years(curt_all, start, end)))
+    g = curt.groupby("farm_id").agg(curtailed_mwh=("curtailed_mwh_a", "sum"),
+                                    potential_mwh=("planned_mwh", "sum"))
+    g["share_wasted"] = (g["curtailed_mwh"] / g["potential_mwh"]).where(g["potential_mwh"] > 0, 0.0)
+    g = g.sort_values("curtailed_mwh", ascending=False).reset_index()
+    return {"totals": totals, "farms": records(g), "meta": meta(s1, s2)}
+
+
+@app.get("/api/reveal/farm/{farm_id}")
+def reveal_farm(farm_id: str, start: Optional[str] = None, end: Optional[str] = None):
+    known_farm(farm_id)
+    curt, src = data.table("curtailment.parquet")
+    c = window(curt[curt["farm_id"] == farm_id], "period_start", start, end)
+    cols = ["planned_mwh", "accepted_mwh", "metered_mwh", "curtailed_mwh_a", "curtailed_mwh_b"]
+    s = c.groupby("period_start")[cols].sum(min_count=1).reset_index()   # keep null when all null
+    return {"farm_id": farm_id, "series": records(s), "meta": meta(src)}
+
+
+@app.get("/api/reveal/boundaries")
+def reveal_boundaries(start: Optional[str] = None, end: Optional[str] = None):
+    resid, src = data.table("residual.parquet")
+    r = window(resid, "period_start", start, end)
+    out = []
+    for zone, boundary in contract.BOUNDARY_OF_ZONE.items():
+        z = r[r["zone"] == zone]
+        share = float((z["residual_method"] == "binding").mean()) if len(z) else 0.0
+        out.append({"boundary": boundary, "share_periods_binding": round(share, 4), "approximate": True})
+    return {"boundaries": out, "meta": meta(src)}
+
+
+# ---------- forecast ----------
+
+@app.get("/api/forecast/tomorrow")
+def forecast_tomorrow():
+    fc, src = data.table("forecast.parquet")
+    live = fc[fc["split"] == "live"]
+    if live.empty:
+        return {"issued_at": None, "farms": [], "meta": meta(src, note="no live forecast available")}
+    issued = live["issued_at"].max()
+    live = live[live["issued_at"] == issued].sort_values("hour_start")
+    out = []
+    for fid, g in live.groupby("farm_id", sort=False):
+        h = g[["hour_start", "curtailed_mwh_pred", "curtailed_mwh_p10", "curtailed_mwh_p90"]]
+        h = h.rename(columns={"curtailed_mwh_pred": "pred_mwh", "curtailed_mwh_p10": "p10_mwh",
+                              "curtailed_mwh_p90": "p90_mwh"})
+        out.append({"farm_id": fid, "hours": records(h)})
+    return {"issued_at": iso(issued), "farms": out, "meta": meta(src)}
+
+
+@app.get("/api/forecast/backtest")
+def forecast_backtest(farm_id: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None):
+    fc, src = data.table("forecast.parquet")
+    bt = window(fc[fc["split"] == "backtest"], "hour_start", start, end)
+    # if an hour was forecast more than once, keep the latest issue
+    bt = bt.sort_values("issued_at").drop_duplicates(["farm_id", "hour_start"], keep="last")
+    if farm_id is not None:
+        if farm_id not in set(fc["farm_id"]):
+            raise HTTPException(404, f"no forecast for farm_id {farm_id!r}")
+        bt = bt[bt["farm_id"] == farm_id]
+    cols = {"curtailed_mwh_pred": "pred_mwh", "curtailed_mwh_actual": "actual_mwh",
+            "baseline_persistence_mwh": "persistence_mwh", "baseline_climatology_mwh": "climatology_mwh",
+            "baseline_wind_rule_mwh": "wind_rule_mwh"}
+    s = bt.groupby("hour_start")[list(cols)].sum(min_count=1).rename(columns=cols).reset_index()
+    return {"farm_id": farm_id or "all", "series": records(s), "meta": meta(src)}
+
+
+@app.get("/api/forecast/metrics")
+def forecast_metrics():
+    m, src = data.json_file("model_metrics.json")
+    return {**m, "meta": meta(src)}
+
+
+# ---------- autopilot ----------
+
+@app.get("/api/autopilot/schedule")
+def autopilot_schedule(date: Optional[str] = None, battery_id: Optional[str] = None,
+                       strategy: Literal["do_nothing", "reactive", "forecast", "perfect"] = "forecast",
+                       dispatcher: Optional[Literal["rule", "lp"]] = None):
+    sched, src = data.table("schedules.parquet")
+    s = sched[sched["strategy"] == strategy]
+    if dispatcher is None:                      # prefer the optimiser once it exists
+        dispatcher = "lp" if (s["dispatcher"] == "lp").any() else "rule"
+    s = s[s["dispatcher"] == dispatcher]
+    if battery_id is not None:
+        if battery_id not in set(sched["battery_id"]):
+            raise HTTPException(404, f"unknown battery_id {battery_id!r}")
+        s = s[s["battery_id"] == battery_id]
+    if s.empty:
+        return {"plan_issued_at": None, "live": False, "batteries": [], "meta": meta(src)}
+    day = parse_ts(date, "date").normalize() if date else s["period_start"].max().normalize()
+    s = s[(s["period_start"] >= day) & (s["period_start"] < day + pd.Timedelta(days=1))]
+    # live mode re-plans: for each half hour keep the newest plan
+    s = s.sort_values("plan_issued_at").drop_duplicates(["battery_id", "period_start"], keep="last")
+    today = pd.Timestamp.now(tz="UTC").normalize()
+    out = [{"battery_id": bid,
+            "steps": records(g.sort_values("period_start")[["period_start", "action", "power_mw", "soc_mwh", "reason"]])}
+           for bid, g in s.groupby("battery_id", sort=True)]
+    return {"plan_issued_at": iso(s["plan_issued_at"].max()) if len(s) else None,
+            "live": bool(day >= today), "date": day.strftime("%Y-%m-%d"),
+            "strategy": strategy, "dispatcher": dispatcher, "batteries": out, "meta": meta(src)}
+
+
+@app.get("/api/autopilot/scorecard")
+def autopilot_scorecard():
+    sc, src = data.json_file("scorecard.json")
+    return {**sc, "meta": meta(src)}
+
+
+# ---------- scenario (simulator) ----------
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class BoundaryLever(_Strict):
+    mode: Literal["historical", "fixed", "offset"] = "historical"
+    mw: float = Field(0.0, ge=-10000, le=20000)
+
+
+class BatteryLever(_Strict):
+    battery_id: str
+    lat: float
+    lon: float
+    zone: Literal["north_scotland", "south_scotland"]
+    power_mw: float = Field(gt=0, le=5000)
+    energy_mwh: float = Field(gt=0, le=20000)
+    efficiency: float = Field(0.88, ge=0.80, le=0.95)
+    dispatcher: Literal["rule", "lp"] = "rule"
+
+
+class WeatherLever(_Strict):
+    wind_scale: float = Field(1.0, ge=0.0, le=1.3)   # 0 allowed for the "no wind -> no waste" check
+    replay_start: Optional[str] = None
+    replay_end: Optional[str] = None
+
+
+class WindowLever(_Strict):
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+
+class SubseaLink(_Strict):
+    zone: Literal["north_scotland", "south_scotland"] = "north_scotland"
+    gw: float = Field(2.0, ge=0, le=10)
+    availability: float = Field(0.95, ge=0, le=1)
+
+
+class ZoneDemand(_Strict):
+    heat_pumps_gw: float = Field(0.0, ge=0, le=10)
+    evs_gw: float = Field(0.0, ge=0, le=10)
+    data_centres_gw: float = Field(0.0, ge=0, le=10)
+
+
+class DemandGrowth(_Strict):
+    north_scotland: ZoneDemand = ZoneDemand()
+    south_scotland: ZoneDemand = ZoneDemand()
+
+
+class SwitchOffPrice(_Strict):
+    mode: Literal["multiplier", "flat"] = "multiplier"
+    value: float = 1.0
+
+
+class Scenario(_Strict):
+    # Core levers 1, 2, 4, 8, 12, 13
+    b4: BoundaryLever = BoundaryLever()
+    b6: BoundaryLever = BoundaryLever()
+    batteries: list[BatteryLever] = []
+    weather: WeatherLever = WeatherLever()
+    window: WindowLever = WindowLever()
+    forecast_quality: Literal["none", "ours", "perfect"] = "ours"
+    # Full levers 3, 6, 9, 10, 11
+    subsea_link: Optional[SubseaLink] = None
+    demand_growth: DemandGrowth = DemandGrowth()
+    gas_price_p_therm: float = Field(contract.DEFAULT_GAS_P_THERM, ge=0)
+    carbon_price_gbp_t: float = Field(contract.DEFAULT_CARBON_GBP_T, ge=0)
+    switch_off_price: SwitchOffPrice = SwitchOffPrice()
+    carbon_intensity_t_mwh: float = Field(contract.DEFAULT_CARBON_INTENSITY_T_MWH, ge=0)
+
+
+def normalise(sc: Scenario) -> dict:
+    """Canonical dict: equivalent requests produce identical dicts (and fingerprints)."""
+    d = sc.model_dump()
+    for b in ("b4", "b6"):
+        if d[b]["mode"] == "historical":
+            d[b]["mw"] = 0.0
+    d["batteries"] = sorted(d["batteries"], key=lambda x: x["battery_id"])
+    return d
+
+
+def fingerprint(d: dict) -> str:
+    return "sha1-" + hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()
+
+
+_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_CACHE_MAX = 256
+
+
+def _baseline_only(sc: dict) -> dict:
+    """Used until sim.engine.simulate exists (#9): every scenario returns the historical baseline."""
+    curt_all, _ = data.table("curtailment.parquet")
+    resid, _ = data.table("residual.parquet")
+    w = sc["window"]
+    curt = window(curt_all, "period_start", w["start"], w["end"])
+    base = round_totals(cost_totals(curt, resid, window_years(curt_all, w["start"], w["end"])))
+    farms_ = curt.groupby("farm_id")["curtailed_mwh_a"].sum().round(3)
+    return {
+        "window": {"start": iso(curt["period_start"].min()),
+                   "end": iso(curt["period_start"].max() + pd.Timedelta(minutes=30)) if len(curt) else None},
+        "scenario": base, "baseline": base,
+        "delta": {k: ({kk: 0.0 for kk in v} if isinstance(v, dict) else 0.0) for k, v in base.items()},
+        "batteries": [{"battery_id": b["battery_id"], "captured_curtailment_mwh": None,
+                       "revenue_gbp": None, "cycles": None} for b in sc["batteries"]],
+        "farms": [{"farm_id": f, "curtailed_mwh": float(v), "baseline_curtailed_mwh": float(v)}
+                  for f, v in farms_.items()],
+    }
+
+
+def _engine():
+    try:
+        from sim.engine import simulate
+        return simulate, "sim.engine"
+    except ImportError:
+        return _baseline_only, "baseline-only (simulator not built yet, see #9)"
+
+
+@app.post("/api/scenario")
+def scenario(sc: Scenario):
+    t0 = time.perf_counter()
+    norm = normalise(sc)
+    fp = fingerprint(norm)
+    sig = data.signature("curtailment.parquet", "residual.parquet", "farms.csv")
+    key = (fp, sig)
+    srcs = [s for _, s, _ in sig]
+    if key in _CACHE:
+        _CACHE.move_to_end(key)
+        body = _CACHE[key]
+        cached = True
+    else:
+        simulate, engine_name = _engine()
+        body = {**simulate(norm), "engine": engine_name}
+        _CACHE[key] = body
+        if len(_CACHE) > _CACHE_MAX:
+            _CACHE.popitem(last=False)
+        cached = False
+    engine_name = body.get("engine")
+    result = {k: v for k, v in body.items() if k != "engine"}
+    return {"fingerprint": fp, "cached": cached, "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+            **result, "meta": meta(*srcs, engine=engine_name)}
+
+
+# ---------- method ----------
+
+@app.get("/api/method/calibration")
+def method_calibration():
+    curt, src = data.table("curtailment.parquet")
+    hist = curt.groupby(curt["period_start"].dt.strftime("%Y-%m"))["curtailed_mwh_a"].sum()
+    sim_by_month = None
+    try:                                         # filled in by #9
+        from sim.calibrate import calibration_by_month
+        sim_by_month = calibration_by_month()   # {"YYYY-MM": simulated_mwh}
+    except ImportError:
+        pass
+    by_month = [{"month": m, "historical_mwh": num(v, 1),
+                 "simulated_mwh": num(sim_by_month.get(m), 1) if sim_by_month else None}
+                for m, v in hist.items()]
+    h_twh = float(hist.sum()) / 1e6
+    s_twh = (sum(v for v in sim_by_month.values()) / 1e6) if sim_by_month else None
+    return {"historical_twh": num(h_twh, 6), "simulated_twh": num(s_twh, 6),
+            "error_pct": num((s_twh - h_twh) / h_twh * 100, 2) if s_twh is not None and h_twh else None,
+            "by_month": by_month, "meta": meta(src)}
+
+
+# Static dashboard last, so /api routes win.
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

@@ -1,0 +1,65 @@
+{
+  "model_version": "fixture-v1",
+  "validation": "FAKE fixture data, not a real backtest",
+  "event_threshold_mwh": 10.0,
+  "models": {
+    "lightgbm": {
+      "mae_mwh": 16.303,
+      "precision": 0.978,
+      "recall": 0.989,
+      "monthly_total_error_pct": 7.15
+    },
+    "persistence": {
+      "mae_mwh": 101.852,
+      "precision": 0.006,
+      "recall": 0.005,
+      "monthly_total_error_pct": 11.29
+    },
+    "climatology": {
+      "mae_mwh": 64.082,
+      "precision": 0.406,
+      "recall": 0.931,
+      "monthly_total_error_pct": 5.31
+    },
+    "wind_rule": {
+      "mae_mwh": 18.143,
+      "precision": 0.987,
+      "recall": 0.888,
+      "monthly_total_error_pct": 7.73
+    }
+  },
+  "shap_top_signals": [
+    {
+      "signal": "b4_excess_potential_mw",
+      "mean_abs_shap": 2.1
+    },
+    {
+      "signal": "scotland_forecast_potential_mw",
+      "mean_abs_shap": 1.6
+    },
+    {
+      "signal": "wind_speed_100m_forecast_ms",
+      "mean_abs_shap": 1.2
+    },
+    {
+      "signal": "gb_demand_forecast_mw",
+      "mean_abs_shap": 0.8
+    },
+    {
+      "signal": "b4_limit_mw",
+      "mean_abs_shap": 0.7
+    },
+    {
+      "signal": "curtailed_mwh_lag48h",
+      "mean_abs_shap": 0.5
+    },
+    {
+      "signal": "hour_of_day",
+      "mean_abs_shap": 0.3
+    },
+    {
+      "signal": "median_bid_price_30d_gbp_mwh",
+      "mean_abs_shap": 0.2
+    }
+  ]
+}

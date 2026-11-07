@@ -1,0 +1,58 @@
+{
+  "period": {
+    "start": "2025-11-03T00:00:00Z",
+    "end": "2025-11-15T00:00:00Z"
+  },
+  "batteries": [
+    {
+      "battery_id": "seagreen_bess",
+      "farm_id": "seagreen",
+      "zone": "north_scotland",
+      "power_mw": 100.0,
+      "energy_mwh": 200.0,
+      "efficiency": 0.88
+    },
+    {
+      "battery_id": "whitelee_bess",
+      "farm_id": "whitelee",
+      "zone": "south_scotland",
+      "power_mw": 50.0,
+      "energy_mwh": 100.0,
+      "efficiency": 0.88
+    }
+  ],
+  "results": [
+    {
+      "strategy": "do_nothing",
+      "dispatcher": "rule",
+      "captured_curtailment_mwh": 0.0,
+      "revenue_gbp": 0.0,
+      "payments_avoided_gbp": 0.0,
+      "capture_ratio": 0.0
+    },
+    {
+      "strategy": "reactive",
+      "dispatcher": "rule",
+      "captured_curtailment_mwh": 1104.7,
+      "revenue_gbp": 50000.0,
+      "payments_avoided_gbp": 66283.0,
+      "capture_ratio": 0.914
+    },
+    {
+      "strategy": "forecast",
+      "dispatcher": "rule",
+      "captured_curtailment_mwh": 929.6,
+      "revenue_gbp": 48724.0,
+      "payments_avoided_gbp": 55776.0,
+      "capture_ratio": 0.891
+    },
+    {
+      "strategy": "perfect",
+      "dispatcher": "rule",
+      "captured_curtailment_mwh": 951.5,
+      "revenue_gbp": 54713.0,
+      "payments_avoided_gbp": 57087.0,
+      "capture_ratio": 1.0
+    }
+  ]
+}
