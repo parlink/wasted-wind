@@ -267,7 +267,70 @@
     </div>
   </section>
   <section id="tab-method" class="tab" role="tabpanel" hidden>
-    <p class="placeholder">Calibration and data sources arrive with the simulator (#9).</p>
+    <p class="sub">How every number on this dashboard is made, what it was checked against, and where it is weak.
+      <span id="method-version"></span></p>
+
+    <div class="block">
+      <h3>Reveal: wind switched off <span class="tag-est">estimated</span></h3>
+      <p class="note">Nobody publishes waste per farm. We rebuild it two independent ways.</p>
+      <ul class="method-list">
+        <li><b>Method A (market):</b> each farm tells the grid what it plans to generate (its Physical Notification).
+          When the grid operator pays it to turn down, that is a bid acceptance. Switched off = planned minus what the
+          accepted instructions allowed, half hour by half hour.</li>
+        <li><b>Method B (physics):</b> wind speed at the hub, run through the turbine power curve, minus what the farm
+          actually metered. It never looks at the market, so where A and B agree, the waste is real.</li>
+        <li>Costs: <b>paid to switch off</b> = waste &times; the farm's accepted bid price. <b>Replacement gas</b> =
+          waste &times; (gas price &divide; 2.93 &divide; 50% efficiency + carbon price &times; 0.37 t/MWh).</li>
+      </ul>
+    </div>
+
+    <div class="block">
+      <h3>Predict: tomorrow's waste <span class="tag-est">forecast</span></h3>
+      <p id="method-validation" class="note"></p>
+      <div class="table-wrap"><table id="method-models" class="table"></table></div>
+      <p class="note">Error = mean absolute error per farm-hour (lower is better). Caught = share of real waste
+        events (over <span id="method-event"></span> in an hour) the model saw coming. Precision = share of its
+        warnings that were real. Monthly total = error in the month's total waste.</p>
+      <ul id="method-forecast-notes" class="method-list"></ul>
+    </div>
+
+    <div class="block">
+      <h3>Simulate: consistency check</h3>
+      <p id="method-calib" class="note"></p>
+      <p class="note">This is a consistency check, not a validation. With today's grid the simulator is built to
+        reproduce history (potential = what was delivered + what was switched off, and waste is shared out the way it
+        was). It confirms the engine and the data agree, so every change you see in a scenario comes from the lever
+        you moved.</p>
+    </div>
+
+    <div class="block">
+      <h3>Autopilot: batteries</h3>
+      <p id="method-basis" class="note"></p>
+      <ul id="method-caveats" class="method-list"></ul>
+    </div>
+
+    <div class="block">
+      <h3>Limitations</h3>
+      <ul class="method-list">
+        <li><b>Three zones.</b> North Scotland, South Scotland, and England &amp; Wales as one. Bottlenecks further south are not modelled.</li>
+        <li><b>Which bottleneck.</b> Public data doesn't say which boundary each turn-down was for. North farms are also
+          turned down when only B6 is full, so we over-credit B4. The simulator inherits this: it overstates what a B4 upgrade
+          saves. The direction is robust; the size is an upper bound.</li>
+        <li><b>The constraint flag isn't perfect.</b> We count turn-downs the operator marks as system actions. Some ordinary balancing may be in or out.</li>
+        <li><b>33 farms, hand-checked</b> (the top Scottish units by constraint volume), coordinates approximate. Smaller farms are in the background "residual".</li>
+        <li><b>NESO's day-ahead limits have no publication time.</b> We assume they're known by 10:00 the day before; the model without them is almost as good (see above).</li>
+        <li><b>Batteries are a simple model:</b> no costs, no wear, no effect on prices, and they charge only from wind that would be wasted.</li>
+      </ul>
+    </div>
+
+    <div class="block">
+      <h3>Data sources</h3>
+      <ul class="method-list">
+        <li><b>Elexon BMRS:</b> planned output (PN), bid acceptances (BOALF), metered output, bid prices.</li>
+        <li><b>NESO:</b> boundary limits and flows for B4 and B6, demand.</li>
+        <li><b>Open-Meteo:</b> historical and forecast wind speed at each farm.</li>
+      </ul>
+    </div>
   </section>
 </aside>
 

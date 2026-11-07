@@ -999,6 +999,81 @@ async function loadAutopilot() {
   } catch (e) { showError(e); }
 }
 
+// ---------- Method ----------
+
+const MODEL_NAMES = { lightgbm: "Our model (LightGBM)", wind_rule: "Wind rule", climatology: "Climatology", persistence: "Persistence" };
+let methodLoaded = false;
+
+async function loadMethod() {
+  if (methodLoaded) return;
+  const tab = $("tab-method");
+  tab.classList.add("loading");
+  // each part is independent: one missing file must not blank the others
+  const [fm, cal, sc] = await Promise.allSettled([api("/api/forecast/metrics"), api("/api/method/calibration"),
+    api("/api/autopilot/scorecard")]);
+  try {
+    const ok = [fm, cal, sc].find((r) => r.status === "fulfilled");
+    if (ok) $("method-version").textContent = `Data: ${ok.value.meta.data_version}.`;
+    if (fm.status === "fulfilled") renderMethodForecast(fm.value);
+    else $("method-validation").textContent = "Forecast metrics not available.";
+    if (cal.status === "fulfilled") renderMethodCalibration(cal.value);
+    else $("method-calib").textContent = "Simulator check not available.";
+    if (sc.status === "fulfilled") renderMethodBatteries(sc.value);
+    else $("method-basis").textContent = "Battery scorecard not available.";
+    methodLoaded = true;
+  } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
+}
+
+function renderMethodForecast(m) {
+  noteSource("forecast metrics", m.meta);
+  $("method-validation").textContent = `Tested ${m.validation || "walk-forward"}: each month is predicted by a model ` +
+    "trained only on earlier months, using only what was known by 10:00 the day before.";
+  $("method-event").textContent = fmtEnergy(m.event_threshold_mwh);
+  const rows = Object.entries(m.models || {});
+  const abl = m.ablations && m.ablations.lightgbm_without_neso_limits;
+  if (abl) rows.splice(1, 0, ["ablation", abl]);
+  const t = clear($("method-models"));
+  t.append(el("thead", {}, el("tr", {}, el("th", {}, "Forecast"), el("th", { class: "num" }, "Error"),
+    el("th", { class: "num" }, "Caught"), el("th", { class: "num" }, "Precision"), el("th", { class: "num" }, "Monthly total"))));
+  const tb = el("tbody");
+  for (const [k, v] of rows) {
+    tb.append(el("tr", { class: k === "lightgbm" ? "ours" : "" },
+      el("td", {}, k === "ablation" ? "Our model without NESO limits" : MODEL_NAMES[k] || k),
+      el("td", { class: "num" }, fmtEnergy(v.mae_mwh)), el("td", { class: "num" }, fmtPct(v.recall)),
+      el("td", { class: "num" }, fmtPct(v.precision)),
+      el("td", { class: "num" }, v.monthly_total_error_pct == null ? "–" : `±${nf(0).format(v.monthly_total_error_pct)}%`)));
+  }
+  t.append(tb);
+  const notes = clear($("method-forecast-notes"));
+  const iv = m.interval;
+  if (iv && iv.coverage_on_waste_hours != null) notes.append(el("li", {}, "Range (10th–90th percentile): should contain the " +
+    `real value ${fmtPct(iv.nominal)} of the time. Overall it does ${fmtPct(iv.coverage_p10_p90)}, but on hours with real ` +
+    `waste only ${fmtPct(iv.coverage_on_waste_hours)}; the misses are storms above the range.`));
+  for (const n of m.notes || []) notes.append(el("li", {}, n));
+}
+
+function renderMethodCalibration(c) {
+  noteSource("simulator", c.meta);
+  if (c.simulated_twh == null) { $("method-calib").textContent = "Simulator not available."; return; }
+  const errs = c.by_month.filter((r) => r.historical_mwh > 0)
+    .map((r) => Math.abs(r.simulated_mwh - r.historical_mwh) / r.historical_mwh);
+  $("method-calib").textContent = `With every lever at today's grid: ${fmtEnergy(c.simulated_twh * 1e6)} simulated vs ` +
+    `${fmtEnergy(c.historical_twh * 1e6)} rebuilt from history, over ${c.by_month.length} months` +
+    (errs.length ? `; the worst month is off by ${Math.max(...errs) < 1e-4 ? "less than 0.01" : nf(2).format(Math.max(...errs) * 100)}%.` : ".");
+}
+
+function renderMethodBatteries(sc) {
+  noteSource("battery schedules", sc.meta);
+  const lp = (sc.results || []).some((r) => r.strategy === "perfect" && r.dispatcher === "lp");
+  $("method-basis").textContent = "Each battery is replayed half hour by half hour against what really happened: it can " +
+    "only catch real waste and only sell when the cable south has room. Capture ratio = its revenue ÷ the revenue of " +
+    (lp ? "the best schedule possible with perfect hindsight (a linear programme, a true ceiling)."
+      : "the same rules given perfect knowledge of the day.") +
+    (sc.holdout ? ` The planning rules were tuned on other months; ${sc.holdout.months.join(", ")} are held out.` : "");
+  const ul = clear($("method-caveats"));
+  for (const c of sc.caveats || []) ul.append(el("li", {}, c));
+}
+
 // ---------- tabs, intro, boot ----------
 
 function setTab(tab) {
@@ -1012,7 +1087,7 @@ function setTab(tab) {
   if (tab === "predict") loadPredict(); else if (tab === "reveal") { renderReveal(); updateMap(); loadFarmDetail().catch(showError); }
   else if (tab === "simulate") loadSimulate();
   else if (tab === "autopilot") { loadAutopilot(); updateMap(); }
-  else updateMap();
+  else { if (tab === "method") loadMethod().catch(showError); updateMap(); }
 }
 
 function initIntro() {
