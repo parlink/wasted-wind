@@ -120,10 +120,15 @@ def fit_all(train: pd.DataFrame) -> dict:
             **{col: _fit_quantile(train, a) for col, a in QUANTILES.items()}}
 
 
-def order_band(p10: np.ndarray, p90: np.ndarray):
-    """Separately fitted quantiles can cross; return a non-negative, ordered (low, high)."""
+def order_band(p10: np.ndarray, p90: np.ndarray, pred: np.ndarray | None = None):
+    """Separately fitted quantiles can cross, and the point model is fitted separately too.
+    Return a non-negative, ordered (low, high) that also contains `pred` when given, so the
+    Predict tab never shows a point outside its own band."""
     lo, hi = np.clip(p10, 0, None), np.clip(p90, 0, None)
-    return np.minimum(lo, hi), np.maximum(lo, hi)
+    lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)
+    if pred is not None:
+        lo, hi = np.minimum(lo, pred), np.maximum(hi, pred)
+    return lo, hi
 
 
 def predict_all(models: dict, rows: pd.DataFrame) -> pd.DataFrame:
@@ -131,7 +136,8 @@ def predict_all(models: dict, rows: pd.DataFrame) -> pd.DataFrame:
     X = rows[ft.FEATURES]
     rows["curtailed_mwh_pred"] = np.clip(models["curtailed_mwh_pred"].predict(X), 0, None)
     rows["curtailed_mwh_p10"], rows["curtailed_mwh_p90"] = order_band(
-        models["curtailed_mwh_p10"].predict(X), models["curtailed_mwh_p90"].predict(X))
+        models["curtailed_mwh_p10"].predict(X), models["curtailed_mwh_p90"].predict(X),
+        rows["curtailed_mwh_pred"].to_numpy())
     return rows
 
 
@@ -338,8 +344,12 @@ def main():
            "shap_top_signals": shap_top(shaps),
            "notes": ["SHAP: mean |SHAP| on each fold's held-out month, averaged over folds",
                      "lightgbm is biased low (~18% on the backtest); the p10-p90 band is fitted separately",
-                     "interval: coverage is 0.8 nominal; on hours with waste it is lower, and the misses "
-                     "are almost all above p90 (storms are under-forecast, like the point model)",
+                     "interval: miscalibrated both ways vs the 0.8 nominal: it over-covers calm hours "
+                     "(a 0-0 band covers a 0) and under-covers hours with waste, where misses are almost "
+                     "all above p90 (storms are under-forecast, like the point model)",
+                     "the band is widened where needed to contain the point forecast",
+                     "live rows: issued_at = refresh time, so their lead time is shorter than the "
+                     "backtest's D-1 10:00 issue",
                      "NESO day-ahead limits are assumed known by D-1 10:00 (no publication time in "
                      "the file); see ablations for the model without them"]}
     (ft.PROCESSED / "model_metrics.json").write_text(json.dumps(out, indent=2))

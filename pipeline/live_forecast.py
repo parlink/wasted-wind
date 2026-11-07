@@ -21,6 +21,7 @@ from typing import Callable
 
 import lightgbm as lgb
 import pandas as pd
+import requests
 
 from pipeline import features as ft
 from pipeline import train as tr
@@ -64,25 +65,43 @@ def replace_live(fc: pd.DataFrame, live: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([fc[fc.split != "live"], live[tr.FC_COLS]], ignore_index=True)[tr.FC_COLS]
 
 
+OFFLINE_ERRORS = (OSError, requests.RequestException, RuntimeError)   # network, API, gave-up retries
+
+
 def refresh(build_live: Callable[[pd.Timestamp], pd.DataFrame] = build_live,
             forecast_path: Path = FORECAST, now: pd.Timestamp | None = None) -> bool:
-    """One refresh. Returns True if the live rows were replaced, False if the cache was kept."""
+    """One refresh. Returns True if the live rows were replaced, False if the cache was kept.
+
+    Never raises: a failed fetch or a failed write (e.g. Windows refusing to replace a file
+    another process has open) keeps the cached forecast and the loop tries again next time.
+    """
     now = now or pd.Timestamp.now(tz="UTC").floor("min")
+    cached_when = None
+    if forecast_path.exists():
+        cached = pd.read_parquet(forecast_path, columns=["split", "issued_at"])
+        cached_when = cached.loc[cached.split == "live", "issued_at"].max()
     try:
         live = build_live(now)
-    except Exception as e:  # noqa: BLE001 - offline / API trouble: keep serving the cached forecast
-        cached = pd.read_parquet(forecast_path) if forecast_path.exists() else pd.DataFrame()
-        when = cached.loc[cached.split == "live", "issued_at"].max() if len(cached) else None
-        log.warning("live refresh failed (%s); keeping cached live forecast issued %s", e, when)
+    except OFFLINE_ERRORS as e:
+        log.warning("live refresh: offline or API error (%s: %s); keeping cached forecast issued %s",
+                    type(e).__name__, e, cached_when)
         return False
-    fc = pd.read_parquet(forecast_path)
-    out = replace_live(fc, live)
+    except Exception:  # noqa: BLE001 - a real bug: say so loudly, but keep serving the cache
+        log.exception("live refresh: unexpected error; keeping cached forecast issued %s", cached_when)
+        return False
     tmp = forecast_path.with_suffix(".tmp")
-    out.to_parquet(tmp, index=False)
-    tmp.replace(forecast_path)               # atomic, so the server never reads half a file
-    log.info("live forecast for %s issued %s: %.0f MWh (p10 %.0f, p90 %.0f)",
-             f"{live.hour_start.min():%Y-%m-%d}", now, live.curtailed_mwh_pred.sum(),
-             live.curtailed_mwh_p10.sum(), live.curtailed_mwh_p90.sum())
+    try:
+        out = replace_live(pd.read_parquet(forecast_path), live)
+        out.to_parquet(tmp, index=False)
+        tmp.replace(forecast_path)           # atomic, so the server never reads half a file
+    except OSError as e:
+        log.warning("live refresh: could not write %s (%s: %s); keeping cached forecast, retry next time",
+                    forecast_path.name, type(e).__name__, e)
+        tmp.unlink(missing_ok=True)
+        return False
+    log.info("live forecast for %s issued %s: %.0f MWh in total (hourly p10/p90 summed: %.0f-%.0f, "
+             "not a band for the daily total)", f"{live.hour_start.min():%Y-%m-%d}", now,
+             live.curtailed_mwh_pred.sum(), live.curtailed_mwh_p10.sum(), live.curtailed_mwh_p90.sum())
     return True
 
 

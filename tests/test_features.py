@@ -193,3 +193,24 @@ def test_built_band_matches_contract():
     assert (fc.curtailed_mwh_p10 <= fc.curtailed_mwh_p90 + 1e-9).all() and (fc.curtailed_mwh_p10 >= 0).all()
     m = json.loads(METRICS.read_text())
     assert 0.5 < m["interval"]["coverage_p10_p90"] < 0.99
+
+
+def test_refresh_survives_a_failed_file_replace(tmp_path, monkeypatch):
+    # Review #33: on Windows os.replace raises if a reader has the file open; the loop must go on.
+    path = tmp_path / "forecast.parquet"
+    pd.concat([_fc("backtest", "2026-10-01T10:00Z"), _fc("live", "2026-11-06T19:00Z")]).to_parquet(path, index=False)
+    real_replace = type(path).replace
+
+    def locked(self, target):
+        if str(target) == str(path):
+            raise PermissionError("file is open in another process")
+        return real_replace(self, target)
+    monkeypatch.setattr(type(path), "replace", locked)
+    assert lf.refresh(build_live=lambda now: _fc("live", "2026-11-07T20:00Z"), forecast_path=path) is False
+    after = pd.read_parquet(path)
+    assert set(after[after.split == "live"].issued_at) == {pd.Timestamp("2026-11-06T19:00Z")}
+
+
+def test_band_contains_the_point_forecast():
+    lo, hi = tr.order_band(np.array([5.0, 0.0]), np.array([9.0, 2.0]), pred=np.array([12.0, 1.0]))
+    assert lo.tolist() == [5.0, 0.0] and hi.tolist() == [12.0, 2.0]
