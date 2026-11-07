@@ -14,6 +14,10 @@ site (MWh per half hour), expected price, and spare boundary capacity south of i
 Never sell at a price <= 0 or without boundary room: energy that can't cross the boundary is
 exactly what was being wasted.
 
+`power_mw` for a discharge is the intended rate in that slot; it is planned even when the plan
+expects to be empty, so the executor sells whatever it really holds (capped by its actual charge).
+`soc_mwh` is the plan's expected state of charge (it never goes below 0).
+
 Units: power_mw is grid-side MW for the half hour. Efficiency is applied once, on charging:
 soc += MW x 0.5 h x efficiency; discharging removes MW x 0.5 h. soc_mwh is at the END of the period.
 """
@@ -25,8 +29,9 @@ H = 0.5                       # hours per settlement period
 CHARGE_THRESHOLD_MWH = 1.0    # floor: forecast waste worth planning around, per half hour
 # ...and at least this share of what the battery can take in a half hour (power x 0.5 h). A
 # forecast of a few MWh at a 1 GW farm is noise; treating it as waste blocks selling all day.
-# Sensitivity on the May-Oct 2026 replay (capture ratio of the forecast battery; reactive 0.35):
-# 1 MWh 0.30, 5 MWh 0.36, 10 MWh 0.38, 25 MWh 0.41. 0.25 gives 12.5 MWh for a 100 MW battery.
+# Chosen by dispatch.scorecard.choose_fraction on May-Jul 2026 only (forecast-battery revenue:
+# 0.0 £765k, 0.05 £860k, 0.1 £912k, 0.25 £922k, 0.5 £887k); Aug-Oct is the hold-out. 0.25 gives
+# 12.5 MWh for a 100 MW battery. A battery dict may override it with "plan_waste_fraction".
 PLAN_WASTE_FRACTION = 0.25
 
 
@@ -46,10 +51,13 @@ def plan_day(battery: dict, curtailment_mwh: np.ndarray, price_gbp_mwh: np.ndarr
     p, e, eff = float(battery["power_mw"]), float(battery["energy_mwh"]), float(battery["efficiency"])
     boundary = "B6" if battery.get("zone") == "south_scotland" else "B4"
     w = np.nan_to_num(np.asarray(curtailment_mwh, float), nan=0.0)
+    # A NaN expected price (e.g. the first day, with no price history) counts as 0, so that
+    # day plans no sales: never sell at <= 0.
     price = np.nan_to_num(np.asarray(price_gbp_mwh, float), nan=0.0)
     head = np.maximum(np.nan_to_num(np.asarray(headroom_mw, float), nan=0.0), 0.0)
     n = len(w)
-    waste = w > max(CHARGE_THRESHOLD_MWH, PLAN_WASTE_FRACTION * p * H)
+    frac = float(battery.get("plan_waste_fraction", PLAN_WASTE_FRACTION))
+    waste = w > max(CHARGE_THRESHOLD_MWH, frac * p * H)
     sell_mw = np.zeros(n)                 # planned discharge per half hour
     sell_why = np.full(n, "", dtype=object)
 
@@ -73,9 +81,13 @@ def plan_day(battery: dict, curtailment_mwh: np.ndarray, price_gbp_mwh: np.ndarr
         to_sell = soc0 - pre_sold + absorbable
     else:
         later, to_sell = np.ones(n, bool), soc0 if soc0 > 0 else e
-    k = int(np.ceil(max(to_sell, 0.0) / (p * H) - 1e-9))
-    for i in _sell_order(price, head, later & (sell_mw == 0))[:k]:
+    # Enough slots to sell to_sell, counting each slot at what it can really take (headroom caps it).
+    left = max(to_sell, 0.0)
+    for i in _sell_order(price, head, later & (sell_mw == 0)):
+        if left <= 1e-9:
+            break
         sell_mw[i] = min(p, head[i])
+        left -= sell_mw[i] * H
         sell_why[i] = f"discharging: top-price half hour (£{price[i]:.0f}/MWh), {head[i]:.0f} MW room on {boundary}"
 
     action = np.full(n, "hold", dtype=object)
@@ -87,10 +99,12 @@ def plan_day(battery: dict, curtailment_mwh: np.ndarray, price_gbp_mwh: np.ndarr
             soc += mw * H * eff
             action[i], power[i] = "charge", mw
             reason[i] = f"charging: {w[i]:.0f} MWh waste forecast behind {boundary}"
-        elif sell_mw[i] > 0 and soc > 1e-9:
-            mw = min(sell_mw[i], soc / H)
-            soc -= mw * H
-            action[i], power[i], reason[i] = "discharge", mw, sell_why[i]
+        elif sell_mw[i] > 0:
+            # Discharge INTENT at the full slot power, even if the plan expects to be empty here:
+            # unforecast waste caught earlier in the day must still be sold. Execution (the
+            # simulator, dispatch.scorecard.execute) caps it by the battery's actual charge.
+            soc -= min(sell_mw[i], soc / H) * H
+            action[i], power[i], reason[i] = "discharge", sell_mw[i], sell_why[i]
         elif waste[i]:
             reason[i] = f"holding: full, {w[i]:.0f} MWh waste forecast behind {boundary}"
         elif head[i] <= 0:

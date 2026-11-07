@@ -6,11 +6,21 @@ Each battery sits behind one farm. Every day it is planned with `plan_day` (CONT
 what that strategy is allowed to know at D-1 10:00 UTC, then executed half hour by half hour
 against reality:
 
-  do_nothing  no battery dispatch                                       (zero line)
+  do_nothing  no battery dispatch                                              (zero line)
   reactive    plan knows no future waste; expected price = mean of the same half hour over
-              the previous 7 days; expected headroom = same half hour yesterday
-  forecast    as reactive, plus our day-ahead waste forecast (forecast.parquet, backtest split)
-  perfect     plan sees the actual waste, price and headroom              (hindsight ceiling)
+              D-8 .. D-2, expected headroom = same half hour on D-2 (all known at D-1 10:00)
+  forecast    as reactive, plus our day-ahead waste forecast (issued D-1 10:00)
+  perfect/rule  the same rules fed the actual waste, price and headroom ("rule-based with
+              hindsight"; not a ceiling)
+  perfect/lp  dispatch.optimiser.hindsight_bound: the best any battery could have done with
+              perfect knowledge (a linear programme over the whole period); capture ratios use it
+
+Plans are issued at D-1 10:00 from data known then. At midnight the plan is re-run with the
+same inputs from the battery's actual state of charge (its own state, known to the operator),
+the "plan, then re-plan from the current state" pattern in the brief.
+
+The planning threshold PLAN_WASTE_FRACTION is chosen on May-Jul 2026 only; Aug-Oct is reported
+separately as a hold-out (scorecard.json "holdout").
 
 Execution is the same for every strategy: charge whenever the farm is actually being curtailed
 (a battery reacts live), and only from that waste; sell when the plan says so, capped by the
@@ -29,6 +39,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from dispatch import rule_based
+from dispatch.optimiser import hindsight_bound
 from dispatch.rule_based import H, plan_day
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -46,6 +58,10 @@ BATTERIES = [
      "power_mw": 50.0, "energy_mwh": 100.0, "efficiency": 0.88},
 ]
 STRATEGIES = ["do_nothing", "reactive", "forecast", "perfect"]
+PRE_DAYS = 8                       # price history before the first replayed day (D-8 .. D-2)
+TUNE_MONTHS = ("2026-05", "2026-06", "2026-07")
+HOLDOUT_MONTHS = ("2026-08", "2026-09", "2026-10")
+FRACTION_GRID = [0.0, 0.05, 0.1, 0.25, 0.5]
 COLUMNS = ["battery_id", "farm_id", "zone", "strategy", "dispatcher", "period_start", "plan_issued_at",
            "action", "power_mw", "soc_mwh", "captured_curtailment_mwh", "revenue_gbp", "reason"]
 
@@ -53,9 +69,10 @@ COLUMNS = ["battery_id", "farm_id", "zone", "strategy", "dispatcher", "period_st
 # ---------- tested pieces ----------
 
 def expected_price(price: np.ndarray, day_index: int, days: int = 7) -> np.ndarray:
-    """Mean price of each half hour over the previous `days` days (NaN if there are none)."""
+    """Mean price of each half hour over the `days` days ending at D-2 (D-1 is not complete at
+    the D-1 10:00 issue time). NaN if there are none."""
     d = price.reshape(-1, 48)
-    prev = d[max(0, day_index - days):day_index]
+    prev = d[max(0, day_index - 1 - days):max(0, day_index - 1)]
     return prev.mean(axis=0) if len(prev) else np.full(48, np.nan)
 
 
@@ -109,11 +126,12 @@ def load_inputs():
                            columns=["farm_id", "period_start", "curtailed_mwh_a", "bid_price_gbp_mwh"])
     res = pd.read_parquet(PROCESSED / "residual.parquet")
     fc = pd.read_parquet(PROCESSED / "forecast.parquet")
-    fc = fc[fc.split == "backtest"]
+    fc = fc[(fc.split == "backtest") & (fc.issued_at == fc.hour_start.dt.normalize() - pd.Timedelta(hours=14))]
+    fc = fc.sort_values("issued_at").drop_duplicates(["farm_id", "hour_start"], keep="last")
     start = fc.hour_start.min().normalize().replace(day=1)
     end = (fc.hour_start.max() + pd.Timedelta(hours=1)).normalize()
     periods = pd.date_range(start, end, freq="30min", inclusive="left")
-    hist = pd.date_range(start - pd.Timedelta(days=7), end, freq="30min", inclusive="left")
+    hist = pd.date_range(start - pd.Timedelta(days=PRE_DAYS), end, freq="30min", inclusive="left")
 
     r = {z: g.set_index("period_start") for z, g in res.groupby("zone")}
     n, s = r["north_scotland"].reindex(hist), r["south_scotland"].reindex(hist)
@@ -141,9 +159,9 @@ def load_inputs():
 # ---------- replay ----------
 
 def replay(battery: dict, strategy: str, hist, price, head_zone, f) -> pd.DataFrame:
-    days = len(hist) // 48 - 7                 # the first 7 days are price history only
+    days = len(hist) // 48 - PRE_DAYS          # the first PRE_DAYS days are history only
     soc, rows = 0.0, []
-    for d in range(7, 7 + days):
+    for d in range(PRE_DAYS, PRE_DAYS + days):
         sl = slice(d * 48, d * 48 + 48)
         actual_w, actual_p, actual_h = f["waste"][sl], price[sl], head_zone[sl]
         day_start = hist[d * 48]
@@ -158,7 +176,7 @@ def replay(battery: dict, strategy: str, hist, price, head_zone, f) -> pd.DataFr
             else:
                 sig = np.zeros(48) if strategy == "reactive" else np.nan_to_num(f["fc"][sl])
                 exp_p = expected_price(price, d)
-                exp_h = head_zone[(d - 1) * 48:d * 48]          # same half hour yesterday
+                exp_h = head_zone[(d - 2) * 48:(d - 1) * 48]    # same half hour on D-2
             plan = plan_day(battery, sig, exp_p, exp_h, soc)
             out = execute(battery, plan, actual_w, actual_p, actual_h, soc, plan["reason"])
             soc = float(out["soc_mwh"][-1])
@@ -170,40 +188,87 @@ def replay(battery: dict, strategy: str, hist, price, head_zone, f) -> pd.DataFr
     return df[COLUMNS]
 
 
+def lp_rows(battery: dict, hist, price, head_zone, f) -> pd.DataFrame:
+    """perfect/lp rows: the hindsight optimum over the whole replay period."""
+    sl = slice(PRE_DAYS * 48, None)
+    out = hindsight_bound(battery, f["waste"][sl], price[sl], head_zone[sl], 0.0)
+    df = pd.DataFrame({"period_start": hist[sl],
+                       "plan_issued_at": hist[sl].normalize() - pd.Timedelta(hours=14), **out})
+    for k in ("battery_id", "farm_id", "zone"):
+        df[k] = battery[k]
+    df["strategy"], df["dispatcher"] = "perfect", "lp"
+    return df[COLUMNS]
+
+
+def _revenue(df: pd.DataFrame, months) -> float:
+    return float(df.loc[df.period_start.dt.strftime("%Y-%m").isin(months), "revenue_gbp"].sum())
+
+
+def choose_fraction(hist, price, head, farm) -> dict:
+    """Pick PLAN_WASTE_FRACTION by forecast-battery revenue on TUNE_MONTHS only."""
+    scores = {}
+    for frac in FRACTION_GRID:
+        tot = 0.0
+        for b in BATTERIES:
+            r = replay(dict(b, plan_waste_fraction=frac), "forecast", hist, price, head[b["zone"]],
+                       farm[b["battery_id"]])
+            tot += _revenue(r, TUNE_MONTHS)
+        scores[frac] = round(tot, 0)
+    best = max(scores, key=scores.get)
+    log.info("plan_waste_fraction on %s: %s -> %s", "/".join(TUNE_MONTHS), scores, best)
+    return {"chosen": best, "selected_on": list(TUNE_MONTHS), "forecast_revenue_gbp_by_fraction": scores}
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     periods, hist, price, head, farm = load_inputs()
+    tuning = choose_fraction(hist, price, head, farm)
+    bats = [dict(b, plan_waste_fraction=tuning["chosen"]) for b in BATTERIES]
     frames = [replay(b, s, hist, price, head[b["zone"]], farm[b["battery_id"]])
-              for b in BATTERIES for s in STRATEGIES]
+              for b in bats for s in STRATEGIES]
+    frames += [lp_rows(b, hist, price, head[b["zone"]], farm[b["battery_id"]]) for b in bats]
     sched = pd.concat(frames, ignore_index=True)
     sched.to_parquet(PROCESSED / "schedules.parquet", index=False)
 
+    sched["key"] = sched.strategy + "/" + sched.dispatcher
     avoided = {}
-    for b in BATTERIES:
+    for b in bats:
         ap = pd.Series(farm[b["battery_id"]]["avoided_price"], index=hist)
-        s = sched[sched.battery_id == b["battery_id"]]
-        for strat, g in s.groupby("strategy"):
-            v = (g.captured_curtailment_mwh * g.period_start.map(ap).fillna(0)).sum()
-            avoided[strat] = avoided.get(strat, 0.0) + float(v)
-    tot = sched.groupby("strategy")[["captured_curtailment_mwh", "revenue_gbp"]].sum()
-    ratios = capture_ratios(tot.revenue_gbp.to_dict())
+        sb = sched[sched.battery_id == b["battery_id"]]
+        for key, g in sb.groupby("key"):
+            avoided[key] = avoided.get(key, 0.0) + float((g.captured_curtailment_mwh
+                                                          * g.period_start.map(ap).fillna(0)).sum())
+    tot = sched.groupby("key")[["captured_curtailment_mwh", "revenue_gbp"]].sum()
+    ceiling = float(tot.loc["perfect/lp", "revenue_gbp"])
+    keys = ["do_nothing/rule", "reactive/rule", "forecast/rule", "perfect/rule", "perfect/lp"]
+
+    def ratio(v, top):
+        return round(v / top, 4) if top else 0.0
+
+    hold = {k: _revenue(sched[sched.key == k], HOLDOUT_MONTHS) for k in keys}
     out = {"period": {"start": f"{periods[0]:%Y-%m-%dT%H:%M:%SZ}",
                       "end": f"{periods[-1] + pd.Timedelta(minutes=30):%Y-%m-%dT%H:%M:%SZ}"},
            "batteries": [{k: b[k] for k in ("battery_id", "farm_id", "zone", "power_mw", "energy_mwh",
-                                            "efficiency")} for b in BATTERIES],
-           "results": [{"strategy": s, "dispatcher": "rule",
-                        "captured_curtailment_mwh": round(float(tot.loc[s, "captured_curtailment_mwh"]), 1),
-                        "revenue_gbp": round(float(tot.loc[s, "revenue_gbp"]), 0),
-                        "payments_avoided_gbp": round(avoided.get(s, 0.0), 0),
-                        "capture_ratio": ratios[s]} for s in STRATEGIES]}
+                                            "efficiency")} for b in bats],
+           "results": [{"strategy": k.split("/")[0], "dispatcher": k.split("/")[1],
+                        "captured_curtailment_mwh": round(float(tot.loc[k, "captured_curtailment_mwh"]), 1),
+                        "revenue_gbp": round(float(tot.loc[k, "revenue_gbp"]), 0),
+                        "payments_avoided_gbp": round(avoided.get(k, 0.0), 0),
+                        "capture_ratio": ratio(float(tot.loc[k, "revenue_gbp"]), ceiling)} for k in keys],
+           "capture_ratio_basis": "revenue / perfect-hindsight LP revenue (dispatch.optimiser)",
+           "holdout": {"months": list(HOLDOUT_MONTHS),
+                       "capture_ratio": {k: ratio(v, hold["perfect/lp"]) for k, v in hold.items()},
+                       "revenue_gbp": {k: round(v, 0) for k, v in hold.items()}},
+           "plan_waste_fraction": tuning}
     (PROCESSED / "scorecard.json").write_text(json.dumps(out, indent=2))
     log.info("wrote schedules.parquet (%d rows) and scorecard.json", len(sched))
     for r in out["results"]:
-        log.info("%-10s captured %9.0f MWh  revenue £%10.0f  avoided £%10.0f  capture %.2f",
-                 r["strategy"], r["captured_curtailment_mwh"], r["revenue_gbp"],
+        log.info("%-10s %-4s captured %9.0f MWh  revenue £%10.0f  avoided £%9.0f  capture %.3f",
+                 r["strategy"], r["dispatcher"], r["captured_curtailment_mwh"], r["revenue_gbp"],
                  r["payments_avoided_gbp"], r["capture_ratio"])
-    by_month = sched.groupby([sched.period_start.dt.strftime("%Y-%m"), "strategy"]).revenue_gbp.sum().unstack()
-    log.info("revenue by month (£):\n%s", by_month[STRATEGIES].round(0).to_string())
+    log.info("hold-out %s capture: %s", "/".join(HOLDOUT_MONTHS), out["holdout"]["capture_ratio"])
+    by_month = sched.groupby([sched.period_start.dt.strftime("%Y-%m"), "key"]).revenue_gbp.sum().unstack()
+    log.info("revenue by month (£):\n%s", by_month[keys].round(0).to_string())
 
 
 if __name__ == "__main__":

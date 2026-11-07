@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from dispatch import rule_based as rb
+from dispatch import optimiser as opt
 from dispatch import scorecard as sc
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,25 +36,51 @@ def test_plan_day_contract_shape():
 
 
 @pytest.mark.parametrize("seed", range(20))
-def test_soc_bounds_and_energy_accounting_on_random_days(seed):
+def test_plan_and_execution_respect_physics_on_random_days(seed):
     rng = np.random.default_rng(seed)
     w = np.where(rng.random(48) < 0.3, rng.uniform(0, 150, 48), 0.0)
     p = rng.normal(60, 40, 48)
     h = np.where(rng.random(48) < 0.5, rng.uniform(0, 300, 48), 0.0)
     soc0 = rng.uniform(0, BAT["energy_mwh"])
-    out = rb.plan_day(BAT, w, p, h, soc0)
-    soc, a, mw = out["soc_mwh"], out["action"], out["power_mw"]
-    assert (soc >= -1e-9).all() and (soc <= BAT["energy_mwh"] + 1e-9).all()
-    e_in = (mw[a == "charge"] * 0.5).sum()
-    e_out = (mw[a == "discharge"] * 0.5).sum()
-    assert e_out <= soc0 + e_in * BAT["efficiency"] + 1e-6
+    plan = rb.plan_day(BAT, w, p, h, soc0)
+    a, mw = plan["action"], plan["power_mw"]
+    assert (plan["soc_mwh"] >= -1e-9).all() and (plan["soc_mwh"] <= BAT["energy_mwh"] + 1e-9).all()
     assert (mw <= BAT["power_mw"] + 1e-9).all()
     assert (mw[a == "discharge"] <= h[a == "discharge"] + 1e-9).all()     # boundary room
     assert (mw[a == "charge"] * 0.5 <= w[a == "charge"] + 1e-9).all()     # only forecast waste
-    # SoC path is consistent with the actions
+    # Execution against a different "actual" day: real physics must hold.
+    aw = np.where(rng.random(48) < 0.3, rng.uniform(0, 150, 48), 0.0)
+    r = sc.execute(BAT, plan, aw, p, h, soc0, plan["reason"])
+    soc, ea, emw = r["soc_mwh"], r["action"], r["power_mw"]
+    assert (soc >= -1e-9).all() and (soc <= BAT["energy_mwh"] + 1e-9).all()
+    e_in = (emw[ea == "charge"] * 0.5).sum()
+    e_out = (emw[ea == "discharge"] * 0.5).sum()
+    assert e_out <= soc0 + e_in * BAT["efficiency"] + 1e-6
     prev = np.r_[soc0, soc[:-1]]
-    step = np.where(a == "charge", mw * 0.5 * BAT["efficiency"], np.where(a == "discharge", -mw * 0.5, 0))
+    step = np.where(ea == "charge", emw * 0.5 * BAT["efficiency"], np.where(ea == "discharge", -emw * 0.5, 0))
     assert np.allclose(soc, prev + step)
+    assert (r["captured_curtailment_mwh"] <= aw + 1e-9).all()
+
+
+def test_unplanned_waste_is_sold_the_same_day():
+    # Review #27: a battery with no forecast that catches waste at 03:00 must still sell at the peak.
+    plan = rb.plan_day(BAT, np.zeros(48), np.r_[np.full(36, 30.0), np.full(4, 150.0), np.full(8, 30.0)],
+                       np.full(48, 500.0), soc_start_mwh=0.0)
+    assert (plan["action"][36:40] == "discharge").all()          # intent, even though planned SoC is 0
+    actual = np.zeros(48)
+    actual[6] = 80.0
+    r = sc.execute(BAT, plan, actual, np.r_[np.full(36, 30.0), np.full(4, 150.0), np.full(8, 30.0)],
+                   np.full(48, 500.0), 0.0, plan["reason"])
+    assert r["revenue_gbp"][36:40].sum() > 0
+
+
+def test_sell_slots_count_headroom_capped_power():
+    # Review #27: slots capped by headroom sell less, so more of them are needed.
+    p = np.full(48, 30.0)
+    p[30:40] = 100.0
+    head = np.full(48, 25.0)                     # 25 MW of room: 12.5 MWh per slot
+    out = rb.plan_day(BAT, np.zeros(48), p, head, soc_start_mwh=200.0)
+    assert (out["action"] == "discharge").sum() >= 10
 
 
 def test_charges_on_forecast_waste_and_says_why():
@@ -109,11 +136,50 @@ def test_execute_only_captures_actual_waste_and_respects_actual_headroom():
     assert (r["soc_mwh"] >= 0).all() and (r["soc_mwh"] <= 200.0).all()
 
 
-def test_expected_price_uses_only_previous_seven_days():
-    price = np.arange(48 * 10, dtype=float)
-    exp = sc.expected_price(price, day_index=8)
-    days = price.reshape(10, 48)[1:8]
+def test_expected_price_uses_seven_days_ending_two_days_before():
+    # Review #27: the plan is issued at D-1 10:00, so D-1 is not complete; use D-8 .. D-2.
+    price = np.arange(48 * 12, dtype=float)
+    exp = sc.expected_price(price, day_index=10)
+    days = price.reshape(12, 48)[2:9]          # days 2..8 = D-8 .. D-2 for D = 10
     assert np.allclose(exp, days.mean(axis=0))
+
+
+def test_hindsight_bound_beats_any_feasible_schedule():
+    rng = np.random.default_rng(3)
+    T = 48 * 3
+    waste = np.where(rng.random(T) < 0.3, rng.uniform(0, 80, T), 0.0)
+    price = rng.normal(60, 40, T)
+    head = np.where(waste > 0, 0.0, rng.uniform(0, 200, T))
+    lp = opt.hindsight_bound(BAT, waste, price, head, soc_start_mwh=0.0)
+    soc = lp["soc_mwh"]
+    assert (soc >= -1e-6).all() and (soc <= BAT["energy_mwh"] + 1e-6).all()
+    assert (lp["captured_curtailment_mwh"] <= waste + 1e-6).all()
+    # any rule-based schedule executed on the same days is feasible, so it can't earn more
+    soc0, rule_rev = 0.0, 0.0
+    for d in range(3):
+        sl = slice(d * 48, d * 48 + 48)
+        plan = rb.plan_day(BAT, waste[sl], price[sl], head[sl], soc0)
+        r = sc.execute(BAT, plan, waste[sl], price[sl], head[sl], soc0, plan["reason"])
+        soc0, rule_rev = r["soc_mwh"][-1], rule_rev + r["revenue_gbp"].sum()
+    assert lp["revenue_gbp"].sum() >= rule_rev - 1e-6
+
+
+def test_synthetic_month_ordering_runs_in_ci():
+    # Review #27: the real-data ordering test skips in CI; this one always runs.
+    rng = np.random.default_rng(7)
+    days = sc.PRE_DAYS + 30
+    hist = pd.date_range("2026-05-01T00:00Z", periods=48 * days, freq="30min")
+    price = rng.normal(70, 35, len(hist))
+    waste = np.where(rng.random(len(hist)) < 0.25, rng.uniform(0, 120, len(hist)), 0.0)
+    head = {"north_scotland": np.where(waste > 0, 0.0, rng.uniform(0, 400, len(hist)))}
+    f = {"waste": waste, "fc": waste * rng.uniform(0.5, 1.5, len(hist)), "avoided_price": np.full(len(hist), 30.0)}
+    b = sc.BATTERIES[0]
+    rev = {s: sc.replay(b, s, hist, price, head["north_scotland"], f).revenue_gbp.sum()
+           for s in ("do_nothing", "reactive", "forecast")}
+    rev["perfect_lp"] = opt.hindsight_bound(b, waste[sc.PRE_DAYS * 48:], price[sc.PRE_DAYS * 48:], head["north_scotland"][sc.PRE_DAYS * 48:],
+                                            0.0)["revenue_gbp"].sum()
+    assert rev["perfect_lp"] >= rev["forecast"] - 1e-6 and rev["perfect_lp"] >= rev["reactive"] - 1e-6
+    assert rev["forecast"] >= rev["do_nothing"] and rev["reactive"] >= rev["do_nothing"]
 
 
 def test_capture_ratio_definition():
@@ -142,7 +208,9 @@ def test_built_schedules_match_contract_and_physics():
 
 @pytest.mark.skipif(not SCHED.exists(), reason="schedules.parquet not built")
 def test_perfect_beats_ours_beats_do_nothing_every_month():
-    s = pd.read_parquet(SCHED, columns=["strategy", "period_start", "revenue_gbp"])
-    m = s.groupby([s.period_start.dt.strftime("%Y-%m"), "strategy"]).revenue_gbp.sum().unstack()
-    assert (m["perfect"] >= m["forecast"] - 1e-6).all(), m
-    assert (m["forecast"] >= m["do_nothing"] - 1e-6).all(), m
+    s = pd.read_parquet(SCHED, columns=["strategy", "dispatcher", "period_start", "revenue_gbp"])
+    s = s.assign(k=s.strategy + "_" + s.dispatcher)
+    m = s.groupby([s.period_start.dt.strftime("%Y-%m"), "k"]).revenue_gbp.sum().unstack()
+    assert (m["perfect_lp"] >= m["forecast_rule"] - 1e-6).all(), m
+    assert (m["perfect_lp"] >= m["reactive_rule"] - 1e-6).all(), m
+    assert (m["forecast_rule"] >= m["do_nothing_rule"] - 1e-6).all(), m
