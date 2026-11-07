@@ -773,8 +773,8 @@ function simRequest() {
   const s = state.sim;
   return {
     b4: { mode: s.b4.mode, mw: s.b4.mw }, b6: { mode: s.b6.mode, mw: s.b6.mw },
-    batteries: s.batteries.map(({ battery_id, lat, lon, zone, power_mw, energy_mwh, efficiency }) =>
-      ({ battery_id, lat, lon, zone, power_mw, energy_mwh, efficiency, dispatcher: "rule" })),
+    batteries: s.batteries.map(({ battery_id, lat, lon, zone, power_mw, energy_mwh, efficiency, site, dispatcher }) =>
+      ({ battery_id, lat, lon, zone, power_mw, energy_mwh, efficiency, site, dispatcher, radius_km: 20 })),
     weather: { wind_scale: s.wind / 100 }, window: simWindow(), forecast_quality: s.quality,
     subsea_link: s.link.zone ? { zone: s.link.zone, gw: s.link.gw, availability: 0.95 } : null,
     demand_growth: { [s.demand.zone]: { heat_pumps_gw: s.demand.hp, evs_gw: s.demand.ev, data_centres_gw: s.demand.dc } },
@@ -855,13 +855,21 @@ function renderSim() {
   }
 
   // batteries
+  if (state.sim.batteries.length) {   // name the farms the server tied each battery to, without rebuilding the inputs
+    document.querySelectorAll(".battery-note").forEach((n) => {
+      const b = state.sim.batteries.find((x) => x.battery_id === n.dataset.id); if (b) n.textContent = batteryNote(b);
+    });
+    drawBatteryLinks();
+  }
   const bo = clear($("sim-batteries-out"));
   if (r.batteries.length) {
     const t = el("table", { class: "table" }, el("thead", {}, el("tr", {}, el("th", {}, "Battery"),
       el("th", { class: "num" }, "Wasted wind stored"), el("th", { class: "num" }, "Earned"), el("th", { class: "num" }, "Full cycles"))));
     const tb = el("tbody");
     for (const x of r.batteries) {
-      tb.append(el("tr", {}, el("td", {}, x.battery_id), el("td", { class: "num" }, fmtEnergy(x.captured_curtailment_mwh)),
+      tb.append(el("tr", {}, el("td", { title: x.site === "farm" ? `At ${(x.farm_ids || []).map(farmName).join(", ")}` : "On the grid" },
+        x.battery_id, el("div", { class: "note", style: { margin: "0" } }, x.site === "farm" ? `at ${(x.farm_ids || []).map(farmName).join(", ")}` : "on the grid")),
+        el("td", { class: "num" }, fmtEnergy(x.captured_curtailment_mwh)),
         el("td", { class: "num" }, fmtCompact(x.revenue_gbp, "£")), el("td", { class: "num" }, nf(1).format(x.cycles))));
     }
     t.append(tb);
@@ -1007,7 +1015,7 @@ function onMapClickPlace(e) {
   if (!zone) { $("place-hint").textContent = "That's in England, outside the model. Click in Scotland."; return true; }
   batteryN += 1;
   state.sim.batteries.push({ battery_id: `battery_${batteryN}`, lat: +lat.toFixed(4), lon: +lng.toFixed(4), zone,
-    power_mw: 200, energy_mwh: 400, efficiency: 0.88 });
+    power_mw: 200, energy_mwh: 400, efficiency: 0.88, site: "farm", dispatcher: "rule" });
   $("place-hint").textContent = `Added a battery ${zone === "north_scotland" ? "north of B4" : "between B4 and B6"}. Edit its size below.`;
   renderBatteryList(); drawBatteryMarkers(); scheduleSim();
   return true;
@@ -1016,6 +1024,9 @@ function onMapClickPlace(e) {
 function renderBatteryList() {
   const list = clear($("battery-list"));
   for (const b of state.sim.batteries) {
+    const choice = (label, key, opts) => el("label", {}, `${label} `,
+      el("select", { onchange: (e) => { b[key] = e.target.value; renderBatteryList(); scheduleSim(); } },
+        ...opts.map(([v, t]) => el("option", { value: v, selected: b[key] === v ? "" : undefined }, t))));
     const field = (label, key, min, max, step) => el("label", {}, `${label} `,
       el("input", { type: "number", min, max, step, value: key === "efficiency" ? Math.round(b[key] * 100) : b[key],
         oninput: (e) => {
@@ -1029,13 +1040,48 @@ function renderBatteryList() {
         state.sim.batteries = state.sim.batteries.filter((x) => x !== b); renderBatteryList(); drawBatteryMarkers(); scheduleSim();
       } }, "×"),
       el("div", { class: "fields" }, field("MW", "power_mw", 1, 5000, 10), field("MWh", "energy_mwh", 1, 20000, 10),
-        field("efficiency %", "efficiency", 80, 95, 1))));
+        field("efficiency %", "efficiency", 80, 95, 1)),
+      el("div", { class: "fields" },
+        choice("Connected", "site", [["farm", "At the nearest wind farm"], ["grid", "To the grid (whole zone)"]]),
+        choice("Planned by", "dispatcher", [["rule", "Simple rules"], ["lp", "Optimiser"]])),
+      el("div", { class: "note battery-note", "data-id": b.battery_id, style: { gridColumn: "1 / -1", margin: "0" } }, batteryNote(b))));
   }
+}
+
+function batteryNote(b) {
+  const res = state.simResult && state.simResult.batteries.find((x) => x.battery_id === b.battery_id);
+  const names = res && res.farm_ids && res.farm_ids.length ? res.farm_ids.map(farmName).join(", ") : null;
+  const lp = b.dispatcher === "lp" ? " The optimiser takes a few seconds per battery." : "";
+  if (b.site === "farm") {
+    return (names ? `Shares a connection with ${names}: it can only store wind those farms would have wasted.`
+      : "Shares a connection with the wind farm(s) within 20 km (or the nearest one): it can only store their waste.") + lp;
+  }
+  return `Connected to the grid, so it can store wind wasted anywhere ${b.zone === "north_scotland" ? "north of B4 (at either pinch point)" : "between B4 and B6 (at B6)"}.` + lp;
+}
+
+function drawBatteryLinks() {   // thin lines from each farm-sited battery to the farms it is tied to
+  if (!map || !map.getSource || !map.loaded()) return;
+  const feats = [];
+  if (state.tab === "simulate" && state.simResult) {
+    for (const b of state.sim.batteries) {
+      const res = state.simResult.batteries.find((x) => x.battery_id === b.battery_id);
+      for (const fid of (res && b.site === "farm" && res.farm_ids) || []) {
+        const f = state.farms.find((x) => x.farm_id === fid);
+        if (f) feats.push({ type: "Feature", geometry: { type: "LineString", coordinates: [[b.lon, b.lat], [f.lon, f.lat]] }, properties: {} });
+      }
+    }
+  }
+  const data = { type: "FeatureCollection", features: feats };
+  if (map.getSource("battery-links")) { map.getSource("battery-links").setData(data); return; }
+  map.addSource("battery-links", { type: "geojson", data });
+  map.addLayer({ id: "battery-links", type: "line", source: "battery-links",
+    paint: { "line-color": C.planned, "line-width": 2, "line-opacity": 0.8 } });
 }
 
 function drawBatteryMarkers() {
   batteryMarkers.forEach((m) => m.remove());
   batteryMarkers.length = 0;
+  drawBatteryLinks();
   if (!map || state.tab !== "simulate") return;
   for (const b of state.sim.batteries) {
     const m = new maplibregl.Marker({ element: el("div", { class: "battery-marker", title: `${b.battery_id}: ${b.power_mw} MW / ${b.energy_mwh} MWh` }) })
