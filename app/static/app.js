@@ -313,8 +313,13 @@ function renderReveal() {
   const t = state.reveal.totals;
   $("window-label").textContent = windowText();
   $("hero-value").textContent = fmtEnergy(t.curtailed_twh * 1e6);
-  $("hero-sub").textContent = `${windowText()} · ${state.farms.length} farms tracked` +
-    (t.curtailed_twh === 0 ? ". None switched off: the grid had room for all their wind." : "");
+  // planned = what the farms told the grid they'd generate; switched off = the part the grid refused
+  const planned = state.reveal.farms.reduce((s, f) => s + (f.potential_mwh || 0), 0);
+  const cut = t.curtailed_twh * 1e6;
+  $("hero-sub").textContent = `${windowText()} · ${state.farms.length} farms tracked · ` +
+    (planned <= 0 ? "no output planned"
+      : cut === 0 ? `${fmtEnergy(planned)} planned, all of it delivered: the grid had room`
+      : `${fmtPct(cut / planned)} of the ${fmtEnergy(planned)} planned`);
   $("t-payments").textContent = fmtCompact(t.payments_gbp, "£");
   $("t-gas").textContent = fmtCompact(t.replacement_gas_gbp, "£");
   $("t-co2").textContent = `${fmtCompact(t.co2_t)} t`;
