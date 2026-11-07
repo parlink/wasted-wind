@@ -55,10 +55,8 @@ DEFAULTS = {
     "window": {"start": None, "end": None},
     "forecast_quality": "ours",
 }
-# Full-tier levers (#15): accepted by the API, not applied yet
-NOT_YET_APPLIED = {"subsea_link": None, "demand_growth": None, "gas_price_p_therm": contract.DEFAULT_GAS_P_THERM,
-                   "carbon_price_gbp_t": contract.DEFAULT_CARBON_GBP_T, "switch_off_price": None,
-                   "carbon_intensity_t_mwh": contract.DEFAULT_CARBON_INTENSITY_T_MWH}
+# Full-tier levers (#15)
+NOT_YET_APPLIED: dict = {}   # every lever in CONTRACT §7 is applied (#15)
 
 
 def with_defaults(sc: dict) -> dict:
@@ -228,12 +226,16 @@ def allocate(m: np.ndarray, excess: np.ndarray, hist: np.ndarray) -> np.ndarray:
     return first + waterfall(m - first, rest)
 
 
-def _boundaries(pot_n, pot_s, res_n, res_s, l4, l6, net_n=0.0, net_s=0.0):
-    """Zone physics for all periods. net_* = battery injection (+ discharge, - charge), MW."""
+def _boundaries(pot_n, pot_s, res_n, res_s, l4, l6, net_n=0.0, net_s=0.0, lk_n=0.0, lk_s=0.0):
+    """Zone physics for all periods. net_* = battery injection (+ discharge, - charge), MW.
+    lk_* = subsea link capacity from that zone straight to England (lever 3): it carries the zone's
+    surplus first, so that power needs neither B4 nor B6."""
     s_n = pot_n + res_n + net_n
+    s_n = s_n - np.clip(s_n, 0.0, lk_n)
     ex4 = np.clip(s_n - l4, 0.0, pot_n)
     flow4 = s_n - ex4
     s_s = pot_s + res_s + flow4 + net_s
+    s_s = s_s - np.clip(s_s, 0.0, lk_s)
     ex6 = np.clip(s_s - l6, 0.0, pot_n + pot_s - ex4)
     return ex4, ex6, flow4, s_s - ex6
 
@@ -268,7 +270,17 @@ def planning_signals(inp: Inputs, q: str, waste_n: np.ndarray, waste_s: np.ndarr
     return sig_n, np.nan_to_num(fc_s), int((np.isnan(fc_n) & np.isnan(fc_s)).sum()), int(np.isnan(fc_s).sum())
 
 
-def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0):
+def _north_room(ex4, ex6, flow4, lk_n):
+    """MW of would-be waste a North battery can remove. Charging cuts the North surplus: first the B4 overflow,
+    then the flow over B4 (which is what relieves B6). With a North subsea link, charging past that point only
+    takes power off the link, which removes no waste, so B6 relief is capped at the B4 flow. Without a link the
+    cut can continue into southbound-to-northbound flow, as before."""
+    if not np.any(np.asarray(lk_n) > 0):
+        return ex4 + ex6
+    return ex4 + np.minimum(ex6, np.maximum(flow4, 0.0))
+
+
+def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0, phys=None):
     """Plan each battery a day ahead with the dispatcher, then execute half hour by half hour.
 
     Execution reacts to what is happening now whatever the plan said: a battery with room
@@ -278,7 +290,8 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
     """
     T, days = len(pot_n), len(pot_n) // 48
     bats = sc["batteries"]
-    waste_n = (ex4_0 + ex6_0) * H           # MWh a North battery could absorb
+    lk_n0 = (phys or {}).get("lk_n", 0.0)
+    waste_n = _north_room(ex4_0, ex6_0, flow4_0, lk_n0) * H   # MWh a North battery could absorb
     waste_s = ex6_0 * H                     # only B6 waste for a South battery
     head_n = np.maximum(0.0, np.minimum(l4 - flow4_0, l6 - flow6_0))
     head_s = np.maximum(0.0, l6 - flow6_0)
@@ -297,7 +310,9 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
         return max(0.0, min(want, b["power_mw"], room, cap))
 
     net_n, net_s = np.zeros(T), np.zeros(T)
-    res_n, res_s = inp.res_n, inp.res_s
+    phys = phys or {}
+    res_n, res_s = phys.get("res_n", inp.res_n), phys.get("res_s", inp.res_s)
+    lk_n, lk_s = phys.get("lk_n", 0.0), phys.get("lk_s", 0.0)
     for d in range(days):
         sl = slice(d * 48, d * 48 + 48)
         day_plans = [planner_for(b)[0](b, p["sig"][sl], price_exp[d], p["head"][sl], p["soc"]) for b, p in zip(bats, plans)]
@@ -305,16 +320,19 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
             j = i - d * 48
             # charging from would-be waste: North batteries first (B4 and B6 waste), then South
             s_n = pot_n[i] + res_n[i]
-            room_n = ex4_0[i] + ex6_0[i]
+            room_n = _north_room(ex4_0[i], ex6_0[i], flow4_0[i], lk_n)
             cn = 0.0
             for b, p, dp in zip(bats, plans, day_plans):
                 if p["north"] and dp["action"][j] != "discharge":
                     want = dp["power_mw"][j] if dp["action"][j] == "charge" else b["power_mw"]
                     c = charge(b, p, want, room_n - cn)
                     p["charge"][i] = c; p["soc"] += c * H * b["efficiency"]; cn += c
-            ex4 = min(max(s_n - cn - l4[i], 0.0), pot_n[i])
-            flow4 = s_n - cn - ex4
+            sn = s_n - cn
+            sn -= min(max(sn, 0.0), lk_n)          # subsea link first (lever 3)
+            ex4 = min(max(sn - l4[i], 0.0), pot_n[i])
+            flow4 = sn - ex4
             s_s = pot_s[i] + res_s[i] + flow4
+            s_s -= min(max(s_s, 0.0), lk_s)
             ex6 = min(max(s_s - l6[i], 0.0), pot_n[i] + pot_s[i] - ex4)
             cs = 0.0
             for b, p, dp in zip(bats, plans, day_plans):
@@ -344,11 +362,17 @@ def run_core(inp: Inputs, sc: dict) -> dict:
     l4 = levers.boundary_mw(inp.lim4, sc["b4"])
     l6 = levers.boundary_mw(inp.lim6, sc["b6"])
     pot_n, pot_s = pot[:, inp.north].sum(axis=1), pot[:, ~inp.north].sum(axis=1)
-    ex4, ex6, flow4, flow6 = _boundaries(pot_n, pot_s, inp.res_n, inp.res_s, l4, l6)
+    # lever 6: new demand in a zone uses its own wind first, so it lowers the zone's residual
+    dg = sc.get("demand_growth") or {}
+    res_n = inp.res_n - levers.demand_growth_mw(inp.periods, dg.get("north_scotland"))
+    res_s = inp.res_s - levers.demand_growth_mw(inp.periods, dg.get("south_scotland"))
+    lk_n, lk_s = levers.subsea_link_mw(sc.get("subsea_link"))   # lever 3
+    phys = dict(res_n=res_n, res_s=res_s, lk_n=lk_n, lk_s=lk_s)
+    ex4, ex6, flow4, flow6 = _boundaries(pot_n, pot_s, res_n, res_s, l4, l6, lk_n=lk_n, lk_s=lk_s)
     plans = []
     if sc["batteries"]:
-        net_n, net_s, plans = _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4, ex6, flow4, flow6)
-        ex4, ex6, flow4, flow6 = _boundaries(pot_n, pot_s, inp.res_n, inp.res_s, l4, l6, net_n, net_s)
+        net_n, net_s, plans = _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4, ex6, flow4, flow6, phys)
+        ex4, ex6, flow4, flow6 = _boundaries(pot_n, pot_s, res_n, res_s, l4, l6, net_n, net_s, lk_n, lk_s)
         # charging was capped at would-be waste, so this only removes waste; clip float noise
         ex4, ex6 = np.maximum(ex4, 0.0), np.maximum(ex6, 0.0)
 
@@ -378,17 +402,35 @@ def _mask(inp: Inputs, window: dict) -> np.ndarray:
     return m
 
 
-def _totals(inp: Inputs, r: dict, m: np.ndarray) -> dict:
+def _payments(inp: Inputs, cut_mwh: np.ndarray, m: np.ndarray, sop: dict | None) -> float:
+    """Lever 11: switch-off payments at the farms' bid prices, scaled, or at one flat price for all."""
+    sop = sop or {}
+    value = sop.get("value")
+    if value is None:                       # unset in either mode: the farms' own bids
+        return float((cut_mwh * -inp.bid_gbp_mwh[m]).sum())
+    if float(value) < 0:
+        raise ValueError("switch_off_price.value must be >= 0 (a multiplier, or £ per MWh paid to the farm)")
+    if sop.get("mode") == "flat":
+        return float(cut_mwh.sum()) * float(value)
+    return float((cut_mwh * -inp.bid_gbp_mwh[m]).sum()) * float(value)
+
+
+def _totals(inp: Inputs, r: dict, m: np.ndarray, sc: dict | None = None) -> dict:
+    sc = sc or {}
     cut_mwh = r["cut_mw"][m] * H
     mwh = float(cut_mwh.sum())
     years = max(m.sum(), 1) * H / (365.25 * 24)
+    pick = lambda k, d: d if sc.get(k) is None else float(sc[k])   # noqa: E731 - 0 is a real price, not "unset"
+    gas = pick("gas_price_p_therm", contract.DEFAULT_GAS_P_THERM)
+    carbon = pick("carbon_price_gbp_t", contract.DEFAULT_CARBON_GBP_T)
+    intensity = pick("carbon_intensity_t_mwh", contract.DEFAULT_CARBON_INTENSITY_T_MWH)
     return {
         "curtailed_twh": round(mwh / 1e6, 9),
         "by_boundary_twh": {"B4": round(float(r["ex4"][m].sum()) * H / 1e6, 9),
                             "B6": round(float(r["ex6"][m].sum()) * H / 1e6, 9)},
-        "payments_gbp": round(float((cut_mwh * -inp.bid_gbp_mwh[m]).sum()), 1),
-        "replacement_gas_gbp": round(mwh * contract.replacement_gbp_mwh(), 1),
-        "co2_t": round(mwh * contract.DEFAULT_CARBON_INTENSITY_T_MWH, 1),
+        "payments_gbp": round(_payments(inp, cut_mwh, m, sc.get("switch_off_price")), 1),
+        "replacement_gas_gbp": round(mwh * contract.replacement_gbp_mwh(gas, carbon, intensity), 1),
+        "co2_t": round(mwh * intensity, 1),
         "homes_equiv": round(mwh / contract.MWH_PER_HOME_PER_YEAR / years, 1),
     }
 
@@ -411,7 +453,9 @@ def _is_baseline(sc: dict) -> bool:
     d = with_defaults({})
     return (sc["b4"] == d["b4"] or sc["b4"].get("mode") == "historical") and \
            (sc["b6"] == d["b6"] or sc["b6"].get("mode") == "historical") and \
-           not sc["batteries"] and float(sc["weather"]["wind_scale"]) == 1.0
+           not sc["batteries"] and float(sc["weather"]["wind_scale"]) == 1.0 and \
+           not (sc.get("subsea_link") and float(sc["subsea_link"].get("gw", 0)) > 0) and \
+           _is_default_full("demand_growth", sc.get("demand_growth") or {})
 
 
 def simulate(scenario: dict) -> dict:
@@ -425,7 +469,7 @@ def simulate(scenario: dict) -> dict:
     base = _baseline(inp)
     res = base if _is_baseline(sc) else run_core(inp, sc)
 
-    s_tot, b_tot = _totals(inp, res, m), _totals(inp, base, m)
+    s_tot, b_tot = _totals(inp, res, m, sc), _totals(inp, base, m, sc)   # same prices: deltas are physical only
     delta = {k: ({kk: round(v[kk] - b_tot[k][kk], 9) for kk in v} if isinstance(v, dict) else round(v - b_tot[k], 9))
              for k, v in s_tot.items()}
     sf, bf = _farm_mwh(inp, res, m), _farm_mwh(inp, base, m)
@@ -461,7 +505,7 @@ def simulate(scenario: dict) -> dict:
 def _is_default_full(key: str, value) -> bool:
     """Full-tier lever dicts sent with all-default values count as not set."""
     if key == "demand_growth":
-        return all(not any(z.values()) for z in value.values()) if isinstance(value, dict) else False
+        return all(not any((z or {}).values()) for z in value.values()) if isinstance(value, dict) else False
     if key == "switch_off_price":
         return isinstance(value, dict) and value.get("mode", "multiplier") == "multiplier" and value.get("value", 1.0) == 1.0
     return False

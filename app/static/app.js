@@ -15,7 +15,7 @@ const BOUNDARIES = {
 };
 
 const state = {
-  tab: "reveal", farm: null, mode: "all", idx: 0, periods: [], anchor: null, days: [], playTimer: null,
+  tab: "reveal", farm: null, mode: "all", range: null, days: [], playTimer: null,
   farms: [], reveal: null, boundaries: null, tomorrow: null, metrics: null,
 };
 const charts = {};
@@ -80,42 +80,55 @@ const farmName = (id) => (state.farms.find((f) => f.farm_id === id) || {}).farm_
 const monthFmt = new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
 const DAY_MS = 86400000;
 
-// Reveal's time windows: every period of the chosen length within the data, as [start, end) UTC days
-function buildPeriods(mode) {
-  if (!state.days.length || mode === "all") return [];
-  const first = state.days[0], end = new Date(state.days[state.days.length - 1].getTime() + DAY_MS);
-  const out = [];
-  if (mode === "day" || mode === "week") {
-    const step = mode === "day" ? 1 : 7;
-    for (let d = first; d < end; d = new Date(d.getTime() + step * DAY_MS)) {
-      const e = new Date(Math.min(d.getTime() + step * DAY_MS, end.getTime()));
-      out.push({ start: d, end: e, label: mode === "day" ? dayFmt.format(d)
-        : `${dayFmt.format(d)} – ${dayFmt.format(new Date(e.getTime() - DAY_MS))}` });
-    }
-  } else {
-    let d = new Date(Date.UTC(first.getUTCFullYear(), mode === "year" ? 0 : first.getUTCMonth(), 1));
-    while (d < end) {
-      const next = mode === "year" ? new Date(Date.UTC(d.getUTCFullYear() + 1, 0, 1))
-        : new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
-      const s = d < first ? first : d, e = next > end ? end : next;
-      const partial = s > d || e < next;
-      const label = mode === "year" ? String(d.getUTCFullYear()) : monthFmt.format(d);
-      out.push({ start: s, end: e, label: partial ? `${label} (${dayFmt.format(s)} – ${dayFmt.format(new Date(e.getTime() - DAY_MS))})` : label });
-      d = next;
-    }
-  }
-  return out;
+// Reveal's time window: null = everything, else [start, end) in whole UTC days.
+// The All/Year/Month/Week/Day buttons give a default range; the date boxes can set any range.
+function dataStart() { return state.days[0]; }
+function dataEnd() { return new Date(state.days[state.days.length - 1].getTime() + DAY_MS); }
+function clampRange(start, end) {
+  const s = new Date(Math.max(start.getTime(), dataStart().getTime()));
+  const e = new Date(Math.min(end.getTime(), dataEnd().getTime()));
+  return e > s ? { start: s, end: e } : null;
 }
-function currentPeriod() { return state.mode === "all" ? null : state.periods[state.idx]; }
+function defaultRange(mode, anchor) {
+  if (mode === "all" || !state.days.length) return null;
+  const a = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate()));
+  if (mode === "day") return clampRange(a, new Date(a.getTime() + DAY_MS));
+  if (mode === "week") {   // 7-day blocks from the first day of data (a Monday)
+    const k = Math.floor((a - dataStart()) / (7 * DAY_MS));
+    const s = new Date(dataStart().getTime() + k * 7 * DAY_MS);
+    return clampRange(s, new Date(s.getTime() + 7 * DAY_MS));
+  }
+  if (mode === "month") return clampRange(new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), 1)),
+    new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth() + 1, 1)));
+  return clampRange(new Date(Date.UTC(a.getUTCFullYear(), 0, 1)), new Date(Date.UTC(a.getUTCFullYear() + 1, 0, 1)));
+}
+function shiftedRange(dir) {   // the next/previous period of the same length
+  const r = state.range;
+  if (!r) return null;
+  if (state.mode === "month" || state.mode === "year") {
+    const a = new Date(r.start);
+    if (state.mode === "month") a.setUTCMonth(a.getUTCMonth() + dir, 1); else a.setUTCFullYear(a.getUTCFullYear() + dir, 0, 1);
+    return a >= dataEnd() ? null : defaultRange(state.mode, new Date(Math.max(a.getTime(), dataStart().getTime())));
+  }
+  const len = state.mode === "day" ? DAY_MS : state.mode === "week" ? 7 * DAY_MS : r.end - r.start;
+  const s = new Date(r.start.getTime() + dir * len);
+  if (s >= dataEnd() || new Date(s.getTime() + len) <= dataStart()) return null;
+  return clampRange(s, new Date(s.getTime() + len));
+}
 function windowParams() {
-  const p = currentPeriod();
-  return p ? `?start=${isoDay(p.start)}&end=${isoDay(p.end)}` : "";
+  const r = state.range;
+  return r ? `?start=${isoDay(r.start)}&end=${isoDay(r.end)}` : "";
 }
 function windowText() {
-  const p = currentPeriod();
-  if (p) return p.label;
   if (!state.days.length) return "";
-  return `${dayFmt.format(state.days[0])} – ${dayFmt.format(state.days[state.days.length - 1])}`;
+  const r = state.range || { start: dataStart(), end: dataEnd() };
+  const last = new Date(r.end.getTime() - DAY_MS);
+  const whole = (unit) => r.start.getUTCDate() === 1 && r.end.getUTCDate() === 1 &&
+    (unit === "month" ? r.start.getUTCMonth() !== r.end.getUTCMonth() || r.end - r.start < 32 * DAY_MS : r.start.getUTCMonth() === 0 && r.end.getUTCMonth() === 0);
+  if (r.end - r.start === DAY_MS) return dayFmt.format(r.start);
+  if (state.mode === "month" && whole("month") && r.end - r.start < 32 * DAY_MS) return monthFmt.format(r.start);
+  if (state.mode === "year" && whole("year")) return String(r.start.getUTCFullYear());
+  return `${dayFmt.format(r.start)} – ${dayFmt.format(last)}`;
 }
 
 function legend(node, items) {
@@ -210,7 +223,11 @@ async function initMap() {
     container: "map", style: await basemapStyle(), center: [-4.0, 57.2], zoom: 5.6,
     attributionControl: { compact: true },
   });
-  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
+  // the panel floats over the right of the map: keep Scotland centred in the visible part
+  const padMap = () => map.setPadding({ top: 0, bottom: 0, left: 0, right: window.innerWidth > 820 ? $("panel").offsetWidth + 24 : 0 });
+  padMap(); window.addEventListener("resize", padMap);
+  map.on("zoom", syncMarkerScale); syncMarkerScale();
   await new Promise((res) => (map.loaded() ? res() : map.once("load", res)));
 
   map.addSource("boundaries", { type: "geojson", data: boundaryGeoJSON() });
@@ -224,7 +241,7 @@ async function initMap() {
              "circle-stroke-width": ["case", ["==", ["get", "farm_id"], ""], 3, 2],
              "circle-stroke-color": C.surface } });
   map.addLayer({ id: "farms-hit", type: "circle", source: "farms",   // bigger invisible hit target
-    paint: { "circle-radius": ["+", 8, ["get", "r"]], "circle-opacity": 0 } });
+    paint: { "circle-radius": zoomScaled(["+", 8, ["get", "r"]]), "circle-opacity": 0 } });
 
   const tip = $("map-tip");
   map.on("mousemove", "farms-hit", (e) => {
@@ -263,6 +280,42 @@ function drawBoundaryLabels() {
   }
 }
 
+// ---------- turbines: each farm is a turbine on its circle; on Reveal the blades turn at the share of
+// output the farm was allowed to make, so a farm that was mostly switched off barely moves ----------
+const TURBINE_SVG = '<svg viewBox="0 0 24 34" aria-hidden="true"><path class="tower" d="M10.7 10 L13.3 10 L15.4 32.6 L8.6 32.6 Z"/><rect class="tower" x="7" y="32" width="10" height="2" rx="1"/><rect class="nacelle" x="10.4" y="8.4" width="5.4" height="3.2" rx="1.3"/><g class="blades"><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z"/><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z" transform="rotate(120 12 10)"/><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z" transform="rotate(240 12 10)"/></g><circle class="hub" cx="12" cy="10" r="2"/></svg>';
+const turbineMarkers = new Map();
+const MIN_CIRCLE_R = 2.5, MAX_CIRCLE_R = 13.5;   // px at the default zoom; the biggest circle is no taller than a turbine
+
+// Marker size as the map zooms. Zooming out shrinks them with the map. Zooming in from the default view they grow
+// more slowly than the land does (so they get a little smaller relative to it), until zoom 9; past that they grow with
+// the land, keeping a fixed size on the ground, up to 12x so they never swamp the screen.
+const BASE_ZOOM = 5.6, SLOW_UNTIL = 9, SLOW_RATE = 0.45, MAX_SCALE = 12;
+function markerScale(z) {
+  if (z <= BASE_ZOOM) return Math.max(0.45, 2 ** (z - BASE_ZOOM));
+  const slow = 2 ** (SLOW_RATE * (Math.min(z, SLOW_UNTIL) - BASE_ZOOM));
+  return Math.min(MAX_SCALE, slow * 2 ** Math.max(0, z - SLOW_UNTIL));
+}
+function zoomScaled(radius) {   // MapLibre: zoom may only drive a top-level interpolate, so sample markerScale at stops
+  const stops = [3, 4.5, BASE_ZOOM, 7, 8, SLOW_UNTIL, 10, 11, 12, 22].flatMap((z) => [z, ["*", radius, markerScale(z)]]);
+  return ["interpolate", ["linear"], ["zoom"], ...stops];
+}
+function syncMarkerScale() { if (map) map.getContainer().style.setProperty("--tscale", markerScale(map.getZoom()).toFixed(3)); }
+function drawTurbines(byFarm, reveal) {
+  for (const f of state.farms) {
+    let m = turbineMarkers.get(f.farm_id);
+    if (!m) {
+      const node = el("div", { class: "turbine" });
+      node.innerHTML = TURBINE_SVG;
+      m = new maplibregl.Marker({ element: node, anchor: "bottom", offset: [0, 2] }).setLngLat([f.lon, f.lat]).addTo(map);
+      turbineMarkers.set(f.farm_id, m);
+    }
+    const node = m.getElement();
+    const running = reveal ? 1 - Math.min(1, Math.max(0, (byFarm[f.farm_id] || {}).share || 0)) : 0.6;
+    node.classList.toggle("still", running < 0.05);
+    node.style.setProperty("--spin", `${(1.4 / Math.max(running, 0.05)).toFixed(2)}s`);   // full output: one turn in 1.4 s
+  }
+}
+
 function updateMap() {
   if (!map || !map.getSource("farms")) return;
   map.getSource("boundaries").setData(boundaryGeoJSON());
@@ -279,10 +332,10 @@ function updateMap() {
     for (const f of (state.reveal && state.reveal.farms) || []) byFarm[f.farm_id] = { value: f.curtailed_mwh, share: f.share_wasted };
   }
   const maxV = Math.max(predict ? 50 : 1e-9, ...Object.values(byFarm).map((v) => v.value || 0));   // 50 MWh floor: tiny forecasts stay small
-  const R = 26;   // radius of the largest circle, px; area is proportional to the value
+  const R = MAX_CIRCLE_R - MIN_CIRCLE_R;   // area is proportional to the value
   const features = state.farms.map((f) => {
     const v = byFarm[f.farm_id] || { value: 0, share: 0 };
-    const r = 3 + R * Math.sqrt((v.value || 0) / maxV);
+    const r = MIN_CIRCLE_R + R * Math.sqrt((v.value || 0) / maxV);
     const tip = simulate
       ? `Your scenario: ${fmtEnergy(v.value)} wasted (really: ${fmtEnergy(v.base)}) · rough`
       : predict
@@ -292,8 +345,9 @@ function updateMap() {
       properties: { farm_id: f.farm_id, name: f.farm_name, value: v.value || 0, share: v.share || 0, r, tip } };
   });
   features.sort((a, b) => b.properties.r - a.properties.r);   // small circles drawn on top
+  drawTurbines(byFarm, !predict && !simulate);
   map.getSource("farms").setData({ type: "FeatureCollection", features });
-  map.setPaintProperty("farms", "circle-radius", ["get", "r"]);
+  map.setPaintProperty("farms", "circle-radius", zoomScaled(["get", "r"]));
   map.setPaintProperty("farms", "circle-color", predict || simulate ? C.waste
     : ["interpolate", ["linear"], ["get", "share"], 0, C.rampZero, 0.1, "#f2a57a", 0.25, C.waste, 0.5, "#b8461a"]);
   map.setPaintProperty("farms", "circle-stroke-color",
@@ -306,13 +360,14 @@ function updateMap() {
 function drawMapLegend(predict, maxV, simulate = false) {
   const node = clear($("map-legend"));
   node.append(el("div", {}, simulate ? "Circle size: wind wasted in your scenario"
-    : predict ? "Circle size: wind expected to be wasted tomorrow" : "Circle size: wind power wasted"));
+    : predict ? "Circle size: wind expected to be wasted tomorrow" : "Circle size: wind power wasted"),
+    el("div", { class: "note", style: { margin: "0" } }, "Example sizes at the starting zoom"));
   if (!(maxV > 0.5)) {
     node.append(el("div", { class: "sub" }, predict && !simulate ? "No waste forecast for any farm" : "No wind wasted in this period"));
   } else {
   const sizes = el("div", { class: "sizes" });
   for (const frac of [0.1, 0.5, 1]) {
-    const d = 2 * (3 + 26 * Math.sqrt(frac));
+    const d = 2 * (MIN_CIRCLE_R + (MAX_CIRCLE_R - MIN_CIRCLE_R) * Math.sqrt(frac));
     sizes.append(el("span", {}, el("span", { class: "dot", style: { width: `${d}px`, height: `${d}px` } }), fmtEnergy(maxV * frac)));
   }
   node.append(sizes);
@@ -341,7 +396,6 @@ async function loadReveal() {
 
 function renderReveal() {
   const t = state.reveal.totals;
-  $("window-label").textContent = windowText();
   $("hero-value").textContent = fmtEnergy(t.curtailed_twh * 1e6);
   // planned = what the farms told the grid they'd generate; switched off = the part the grid refused
   const planned = state.reveal.farms.reduce((s, f) => s + (f.potential_mwh || 0), 0);
@@ -488,7 +542,8 @@ async function loadFarmDetail() {
   const r = hasB ? pearson(a, b) : null;
   $("ab-note").textContent = !hasB ? "The weather cross-check isn't available for this farm."
     : r == null ? "Not enough days to compare the two methods."
-    : `The two estimates move together ${step} to ${step}: correlation ${r.toFixed(2)} (1 = perfectly, above 0.6 is good).`;
+    : `The two estimates move together ${step} to ${step}: correlation ${r.toFixed(2)} (1 = perfectly` +
+      (step === "day" ? ", above 0.6 is good)." : "; weekly and monthly totals correlate more easily, so pick a month or less for the daily test).");
 }
 
 function selectFarm(id) {
@@ -505,22 +560,52 @@ function selectFarm(id) {
 
 // ---------- window controls ----------
 
+function syncDateInputs() {
+  const r = state.range || (state.days.length ? { start: dataStart(), end: dataEnd() } : null);
+  if (!r) return;
+  for (const id of ["range-start", "range-end"]) {
+    $(id).min = isoDay(dataStart()); $(id).max = isoDay(new Date(dataEnd().getTime() - DAY_MS));
+  }
+  $("range-start").value = isoDay(r.start);
+  $("range-end").value = isoDay(new Date(r.end.getTime() - DAY_MS));   // shown inclusive
+  document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode)));
+  const fixed = state.mode !== "all";
+  $("range-prev").disabled = !fixed || !shiftedRange(-1);
+  $("range-next").disabled = !fixed || !shiftedRange(1);
+  $("play").disabled = !fixed;
+}
 function setMode(mode) {
-  // keep looking at the same moment: the new period is the one containing the old one's start
-  const cur = currentPeriod();
-  if (cur) state.anchor = cur.start;
-  if (!state.anchor && state.days.length) state.anchor = state.days[state.days.length - 1];
+  // keep looking at the same moment: the new range is the one containing the old one's start
+  const anchor = state.range ? state.range.start : (state.days.length ? state.days[state.days.length - 1] : null);
+  const fromAll = !state.range;
   state.mode = mode;
-  state.periods = buildPeriods(mode);
-  const i = state.periods.findIndex((p) => state.anchor >= p.start && state.anchor < p.end);
-  state.idx = i >= 0 ? i : Math.max(0, state.periods.length - 1);
-  document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
-  const slider = $("day-slider");
-  slider.disabled = mode === "all";
-  slider.max = Math.max(0, state.periods.length - 1);
-  slider.value = state.idx;
-  $("play").disabled = mode === "all" || state.periods.length < 2;
+  state.range = anchor ? defaultRange(mode, anchor) : null;
+  // coming from "All", start on the latest *complete* week / month / year, not the few days of the current one
+  const full = { week: 7, month: 28, year: 365 }[mode];
+  if (fromAll && full && state.range && (state.range.end - state.range.start) / DAY_MS < full) {
+    state.range = shiftedRange(-1) || state.range;
+  }
+  syncDateInputs();
   loadReveal();
+}
+function setRangeFromInputs() {
+  const a = $("range-start").value, b = $("range-end").value;
+  if (!a || !b) return;
+  let s = new Date(`${a}T00:00:00Z`), e = new Date(`${b}T00:00:00Z`);
+  if (e < s) [s, e] = [e, s];
+  const r = clampRange(s, new Date(e.getTime() + DAY_MS));
+  if (!r) return;
+  state.range = r;
+  const len = r.end - r.start;
+  state.mode = len === DAY_MS ? "day" : "custom";   // a hand-picked range: ‹ › step by its own length
+  syncDateInputs();
+  loadReveal();
+}
+function stepRange(dir) {
+  const r = shiftedRange(dir);
+  if (!r) return false;
+  state.range = r; syncDateInputs(); loadReveal();
+  return true;
 }
 function stopPlay() {
   if (state.playTimer) clearInterval(state.playTimer);
@@ -529,13 +614,14 @@ function stopPlay() {
 }
 function togglePlay() {
   if (state.playTimer) return stopPlay();
-  if (state.mode === "all") setMode("day");
-  if (state.idx >= state.periods.length - 1) { state.idx = -1; }   // at the end: play from the start
+  if (state.mode === "all") return;
+  if (!shiftedRange(1)) {   // at the end: play from the start
+    state.range = defaultRange(state.mode === "custom" ? "day" : state.mode, dataStart());
+    if (state.mode === "custom") state.mode = "day";
+    syncDateInputs(); loadReveal();
+  }
   $("play").textContent = "❚❚"; $("play").setAttribute("aria-label", "Pause");
-  state.playTimer = setInterval(() => {
-    if (state.idx >= state.periods.length - 1) return stopPlay();
-    state.idx += 1; $("day-slider").value = state.idx; loadReveal();
-  }, 1400);
+  state.playTimer = setInterval(() => { if (!stepRange(1)) stopPlay(); }, 1400);
 }
 
 // ---------- Predict ----------
@@ -622,7 +708,7 @@ function renderPredict() {
   $("metrics-note").textContent = `An "event" is an hour where a farm wastes over ${m.event_threshold_mwh} MWh. "Warnings right" = how often a predicted event really happened; ` +
     `"events caught" = how many real events it saw coming. Tested ${m.validation}. Model ${m.model_version}.`;
 
-  hbars($("shap-bars"), (m.shap_top_signals || []).map((s) => ({ id: s.signal, label: s.signal.replace(/_/g, " "), value: s.mean_abs_shap })),
+  hbars($("shap-bars"), (m.shap_top_signals || []).map((s) => ({ id: s.signal, label: SIGNAL_NAMES[s.signal] || s.signal.replace(/_/g, " "), value: s.mean_abs_shap })),
     { color: C.planned, fmt: (v) => nf(2).format(v) });
 
   loadBacktest().catch(showError);
@@ -633,13 +719,17 @@ async function loadBacktest() {
   const q = id ? `?farm_id=${encodeURIComponent(id)}` : "";
   const bt = await api(`/api/forecast/backtest${q}`);
   if (state.farm !== id) return;
-  const s = bt.series;
+  // six months of hours is a smear: show daily totals (dailySums keys on period_start)
+  const daily = dailySums(bt.series.map((p) => ({ period_start: p.hour_start, actual_mwh: p.actual_mwh, pred_mwh: p.pred_mwh })),
+    ["actual_mwh", "pred_mwh"]);
+  const days = [...daily.keys()], s = [...daily.values()];
   legend($("bt-legend"), [{ label: "Really wasted", color: C.planned, kind: "line" },
     { label: "Our forecast, made the day before", color: C.waste, kind: "line" }]);
-  lineChart("backtest-chart", s.map((p) => shortFmt.format(new Date(p.hour_start))), [
+  const dm = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+  lineChart("backtest-chart", days.map((k) => dm.format(new Date(k))), [
     { label: "actual", data: s.map((p) => p.actual_mwh), borderColor: C.planned },
     { label: "forecast", data: s.map((p) => p.pred_mwh), borderColor: C.waste },
-  ], { yLabel: "MWh per hour" });
+  ], { yLabel: "MWh per day" });
 }
 
 // ---------- Simulate ----------
@@ -647,7 +737,19 @@ async function loadBacktest() {
 const SIM_DEFAULT = () => ({
   b4: { mode: "historical", mw: 0 }, b6: { mode: "historical", mw: 0 },
   batteries: [], wind: 100, quality: "ours", preset: "all", start: "", end: "",
+  link: { zone: "", gw: 2 },
+  demand: { zone: "north_scotland", hp: 0, ev: 0, dc: 0 },
+  eco: { gas: 80, carbon: 50, intensity: 0.37, switch: 1 },
 });
+// landing points for the drawn undersea cable (indicative), and the slider formats
+const LINK_ROUTES = { north_scotland: [[-1.78, 57.50], [-1.15, 53.75]], south_scotland: [[-2.40, 55.97], [-1.35, 54.80]] };
+const SIM_SLIDERS = [
+  ["dem-hp", "demand", "hp", (v) => `${nf(1).format(v)} GW`], ["dem-ev", "demand", "ev", (v) => `${nf(1).format(v)} GW`],
+  ["dem-dc", "demand", "dc", (v) => `${nf(1).format(v)} GW`],
+  ["eco-gas", "eco", "gas", (v) => `${nf(0).format(v)}p/therm`], ["eco-carbon", "eco", "carbon", (v) => `£${nf(0).format(v)}/t`],
+  ["eco-intensity", "eco", "intensity", (v) => `${nf(2).format(v)} t`], ["eco-switch", "eco", "switch", (v) => `${nf(1).format(v)}×`],
+  ["link-gw", "link", "gw", (v) => `${nf(1).format(v)} GW`],
+];
 state.sim = SIM_DEFAULT();
 state.simResult = null;
 state.simPart1 = null;
@@ -674,6 +776,10 @@ function simRequest() {
     batteries: s.batteries.map(({ battery_id, lat, lon, zone, power_mw, energy_mwh, efficiency }) =>
       ({ battery_id, lat, lon, zone, power_mw, energy_mwh, efficiency, dispatcher: "rule" })),
     weather: { wind_scale: s.wind / 100 }, window: simWindow(), forecast_quality: s.quality,
+    subsea_link: s.link.zone ? { zone: s.link.zone, gw: s.link.gw, availability: 0.95 } : null,
+    demand_growth: { [s.demand.zone]: { heat_pumps_gw: s.demand.hp, evs_gw: s.demand.ev, data_centres_gw: s.demand.dc } },
+    gas_price_p_therm: s.eco.gas, carbon_price_gbp_t: s.eco.carbon, carbon_intensity_t_mwh: s.eco.intensity,
+    switch_off_price: { mode: "multiplier", value: s.eco.switch },
   };
 }
 
@@ -719,7 +825,7 @@ function renderSim() {
   const sameData = state.simPart1 && state.simPart1.meta.source === r.meta.source;
   const win = r.window.start ? `${dayFmt.format(new Date(r.window.start))} – ${dayFmt.format(new Date(new Date(r.window.end) - 1))}` : "";
   $("sim-history").textContent = `${win} · What really happened: ${fmtEnergy(b.curtailed_twh * 1e6)} wasted` +
-    (sameData && p1 ? ` (the Reveal tab says ${fmtEnergy(p1 * 1e6)}).` : ".");
+    (sameData && p1 ? ` (the History tab says ${fmtEnergy(p1 * 1e6)}).` : ".");
 
   const tiles = [["payments", "payments_gbp", (v) => fmtCompact(v, "£")], ["gas", "replacement_gas_gbp", (v) => fmtCompact(v, "£")],
     ["co2", "co2_t", (v) => `${fmtCompact(v)} t`], ["homes", "homes_equiv", (v) => fmtCompact(v)]];
@@ -803,8 +909,32 @@ function syncControls() {
   $("forecast-quality").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.q === state.sim.quality)));
   $("window-preset").value = state.sim.preset;
   $("window-custom").hidden = state.sim.preset !== "custom";
+  for (const [id, group, key, fmt] of SIM_SLIDERS) { $(id).value = state.sim[group][key]; $(`${id}-out`).textContent = fmt(state.sim[group][key]); }
+  $("link-zone").value = state.sim.link.zone; $("link-size-row").hidden = !state.sim.link.zone;
+  $("demand-zone").value = state.sim.demand.zone;
   renderBatteryList();
   drawBatteryMarkers();
+}
+
+function drawSubsea() {   // the new cable as a curve out at sea (indicative route)
+  if (!map || !map.getSource) return;
+  const z = state.tab === "simulate" && state.sim.link.zone;
+  let features = [];
+  if (z) {
+    const [a, b] = LINK_ROUTES[z];
+    const ctrl = [Math.max(a[0], b[0]) + 1.6, (a[1] + b[1]) / 2];   // bow it east, offshore
+    const pts = [];
+    for (let t = 0; t <= 1.0001; t += 0.05) {
+      pts.push([(1 - t) ** 2 * a[0] + 2 * (1 - t) * t * ctrl[0] + t ** 2 * b[0], (1 - t) ** 2 * a[1] + 2 * (1 - t) * t * ctrl[1] + t ** 2 * b[1]]);
+    }
+    features = [{ type: "Feature", geometry: { type: "LineString", coordinates: pts }, properties: {} }];
+  }
+  const data = { type: "FeatureCollection", features };
+  if (map.getSource("subsea")) { map.getSource("subsea").setData(data); return; }
+  if (!map.loaded()) return;
+  map.addSource("subsea", { type: "geojson", data });
+  map.addLayer({ id: "subsea", type: "line", source: "subsea",
+    paint: { "line-color": C.planned, "line-width": 3, "line-dasharray": [1, 1.2] } });
 }
 
 function initSimControls() {
@@ -836,7 +966,14 @@ function initSimControls() {
   for (const id of ["window-start", "window-end"]) $(id).addEventListener("change", () => {
     state.sim.start = $("window-start").value; state.sim.end = $("window-end").value; scheduleSim();
   });
-  $("sim-reset").addEventListener("click", () => { state.sim = SIM_DEFAULT(); setPlacing(false); syncControls(); scheduleSim(); });
+  for (const [id, group, key, fmt] of SIM_SLIDERS) $(id).addEventListener("input", (e) => {
+    state.sim[group][key] = Number(e.target.value); $(`${id}-out`).textContent = fmt(state.sim[group][key]); scheduleSim();
+  });
+  $("link-zone").addEventListener("change", (e) => {
+    state.sim.link.zone = e.target.value; $("link-size-row").hidden = !e.target.value; drawSubsea(); scheduleSim();
+  });
+  $("demand-zone").addEventListener("change", (e) => { state.sim.demand.zone = e.target.value; scheduleSim(); });
+  $("sim-reset").addEventListener("click", () => { state.sim = SIM_DEFAULT(); setPlacing(false); syncControls(); drawSubsea(); scheduleSim(); });
   $("place-battery").addEventListener("click", () => setPlacing(!state.placing));
 }
 
@@ -910,6 +1047,7 @@ function drawBatteryMarkers() {
 async function loadSimulate() {
   if (!simInit) { initSimControls(); simInit = true; syncControls(); }
   drawBatteryMarkers();
+  drawSubsea();
   if (!state.simResult) await runSim(); else { renderSim(); updateMap(); }
 }
 
@@ -1134,6 +1272,16 @@ async function loadMethod() {
   } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
 }
 
+const SIGNAL_NAMES = {
+  pot_farm_mw: "This farm's expected output", pot_north_mw: "Expected wind output, north of B4",
+  pot_south_mw: "Expected wind output, south of B4", farm_code: "Which farm it is", capacity_mw: "Farm size",
+  wind_fc_ms: "Forecast wind speed", b4_limit_mw: "B4 capacity tomorrow", b6_limit_mw: "B6 capacity tomorrow",
+  b4_excess_potential_mw: "Expected overflow at B4", b6_excess_potential_mw: "Expected overflow at B6",
+  gb_demand_fc_mw: "Britain's forecast demand", lag48_mwh: "Waste at this hour 2 days ago",
+  trailing_waste_rate: "How often it was switched off lately", bid_median_gbp_mwh: "Its price to switch off",
+  hour: "Hour of day", weekday: "Day of week", month: "Month",
+};
+
 function renderMethodForecast(m) {
   noteSource("forecast metrics", m.meta);
   $("method-validation").textContent = `Tested ${m.validation || "walk-forward"}: each month is predicted by a model ` +
@@ -1194,42 +1342,28 @@ function setTab(tab) {
   if (tab !== "simulate") setPlacing(false);
   if (tab !== "autopilot" && state.ap) stopApReplay();
   drawBatteryMarkers();
+  drawSubsea();
   if (tab === "predict") loadPredict(); else if (tab === "reveal") { renderReveal(); updateMap(); loadFarmDetail().catch(showError); }
   else if (tab === "simulate") loadSimulate();
   else if (tab === "autopilot") { loadAutopilot(); updateMap(); }
   else { if (tab === "method") loadMethod().catch(showError); updateMap(); }
 }
 
-function initIntro() {
-  const intro = $("intro");
-  const steps = [...intro.querySelectorAll(".intro-step")];
-  let i = 0;
-  const close = () => { intro.hidden = true; document.removeEventListener("keydown", onKey); if (map) map.resize(); };
-  const next = () => { if (i >= steps.length - 1) return close(); steps[i].hidden = true; i += 1; steps[i].hidden = false; };
-  const onKey = (e) => { if (e.key === "Escape") close(); else if (e.key === "Enter" || e.key === " " || e.key === "ArrowRight") { e.preventDefault(); next(); } };
-  document.addEventListener("keydown", onKey);
-  intro.addEventListener("click", (e) => (e.target.id === "enter-map" ? close() : next()));
-  if (new URLSearchParams(location.search).has("nointro")) close();
-}
-
 async function boot() {
-  initIntro();
   document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.addEventListener("click", () => { stopPlay(); setMode(b.dataset.mode); }));
   $("play").addEventListener("click", togglePlay);
-  $("day-slider").addEventListener("input", (e) => {
-    stopPlay(); state.idx = Number(e.target.value);
-    const p = currentPeriod(); if (p) state.anchor = p.start;
-    loadReveal();
-  });
+  $("range-start").addEventListener("change", () => { stopPlay(); setRangeFromInputs(); });
+  $("range-end").addEventListener("change", () => { stopPlay(); setRangeFromInputs(); });
+  $("range-prev").addEventListener("click", () => { stopPlay(); stepRange(-1); });
+  $("range-next").addEventListener("click", () => { stopPlay(); stepRange(1); });
   $("farm-clear").addEventListener("click", () => selectFarm(state.farm));
-  $("day-slider").disabled = true;
   try {
     const [health, farms] = await Promise.all([api("/api/health"), api("/api/farms")]);
     state.farms = farms.farms;
     const start = new Date(health.range.start), end = new Date(health.range.end);
     for (let d = new Date(start); d < end; d = new Date(d.getTime() + 86400000)) state.days.push(d);
-    $("play").disabled = true;
+    syncDateInputs();
     noteSource("wind farm waste", health.meta);
     $("source-tag").title = `Generated ${health.meta.generated_at}`;
     // The panel must never wait on map tiles (venue Wi-Fi): load both, draw the map when ready.

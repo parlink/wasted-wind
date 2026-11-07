@@ -10,34 +10,22 @@
 </head>
 <body>
 
-<!-- Intro: two screens. Enter/click advances, Esc skips. -->
-<div id="intro" class="intro" role="dialog" aria-label="Introduction">
-  <div class="intro-step" data-step="0">
-    <p class="intro-big">In 2025 Britain switched off about <strong>10&nbsp;TWh</strong> of wind, almost all of it in Scotland.</p>
-    <p class="intro-hint">Enter to continue · Esc to skip</p>
-  </div>
-  <div class="intro-step" data-step="1" hidden>
-    <p class="intro-big">The yearly total is known. Where, when and why is not.</p>
-    <p class="intro-big intro-accent">We rebuilt it.</p>
-    <button type="button" id="enter-map" class="btn-primary">Enter map</button>
-  </div>
-</div>
-
 <div id="map" aria-label="Map of Scottish wind farms"></div>
 <div id="map-legend" class="map-legend"></div>
 <div id="map-tip" class="tip" hidden></div>
 <div id="fake-banner" class="fake-banner" hidden>Demo data: these are not real numbers</div>
 
+<div id="loader" class="loader" role="status" aria-live="polite"><div class="turbine big"><svg viewBox="0 0 24 34" aria-hidden="true"><path class="tower" d="M10.7 10 L13.3 10 L15.4 32.6 L8.6 32.6 Z"/><rect class="tower" x="7" y="32" width="10" height="2" rx="1"/><rect class="nacelle" x="10.4" y="8.4" width="5.4" height="3.2" rx="1.3"/><g class="blades"><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z"/><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z" transform="rotate(120 12 10)"/><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z" transform="rotate(240 12 10)"/></g><circle class="hub" cx="12" cy="10" r="2"/></svg></div><span>Loading</span></div>
 <aside id="panel" class="panel">
   <header class="panel-head">
     <h1>Wasted Wind</h1>
     <span id="source-tag" class="tag"></span>
   </header>
   <nav class="tabs" role="tablist">
-    <button role="tab" data-tab="reveal" aria-selected="true">Reveal</button>
-    <button role="tab" data-tab="predict" aria-selected="false">Predict</button>
+    <button role="tab" data-tab="reveal" aria-selected="true">History</button>
+    <button role="tab" data-tab="predict" aria-selected="false">Forecast</button>
     <button role="tab" data-tab="simulate" aria-selected="false">Simulate</button>
-    <button role="tab" data-tab="autopilot" aria-selected="false">Autopilot</button>
+    <button role="tab" data-tab="autopilot" aria-selected="false">Batteries</button>
     <button role="tab" data-tab="method" aria-selected="false">Method</button>
   </nav>
   <div id="error" class="error" hidden></div>
@@ -54,11 +42,14 @@
         <button type="button" data-mode="week" aria-pressed="false">Week</button>
         <button type="button" data-mode="day" aria-pressed="false">Day</button>
       </div>
-      <button type="button" id="play" class="icon-btn" aria-label="Play through">▶</button>
     </div>
-    <div class="filter-row">
-      <input type="range" id="day-slider" min="0" max="0" value="0" aria-label="Which period">
-      <span id="window-label" class="window-label"></span>
+    <div class="filter-row date-row">
+      <button type="button" id="range-prev" class="icon-btn" aria-label="Previous period">‹</button>
+      <input type="date" id="range-start" aria-label="From">
+      <span class="date-sep">to</span>
+      <input type="date" id="range-end" aria-label="To (inclusive)">
+      <button type="button" id="range-next" class="icon-btn" aria-label="Next period">›</button>
+      <button type="button" id="play" class="icon-btn" aria-label="Play through">▶</button>
     </div>
 
     <div class="hero">
@@ -149,6 +140,8 @@
       <div id="sim-value" class="hero-value">–</div>
       <div id="sim-delta" class="delta"></div>
       <div id="sim-history" class="sub"></div>
+      <p class="note">Gains north of B4 (a bigger B4, a cable or new demand in the north) are upper bounds: the records can't
+        tell which pinch point each switch-off was for, so some waste counted as B4 may really have been caused further south.</p>
     </div>
     <div class="tiles">
       <div class="tile"><div class="label">Paid to farms to switch off</div><div class="value" id="s-payments">–</div><div class="delta" id="s-payments-d"></div></div>
@@ -186,6 +179,16 @@
         </div>
         <div class="lever-row"><input type="range" aria-label="B6 MW" disabled><output></output></div>
       </div>
+      <div class="lever" id="link-lever">
+        <label for="link-zone">A new undersea cable straight to England</label>
+        <select id="link-zone" aria-label="Where the new cable starts">
+          <option value="">None</option>
+          <option value="north_scotland">From north of B4 (e.g. Peterhead)</option>
+          <option value="south_scotland">From between B4 and B6 (e.g. Torness)</option>
+        </select>
+        <div class="lever-row" id="link-size-row" hidden><input type="range" id="link-gw" min="0.5" max="4" step="0.5" value="2" aria-label="Cable size"><output id="link-gw-out"></output></div>
+        <p class="note">It skips the pinch points: power from that zone can go straight south under the sea. Treated as 95% of its size all the time, with no outages or cable losses, so results are a little optimistic.</p>
+      </div>
     </fieldset>
 
     <fieldset class="lever-group">
@@ -203,6 +206,55 @@
           <button type="button" data-q="perfect" aria-pressed="false">Knows the future</button>
         </div>
         <p class="note">The gap between these is what our forecast is worth. Our forecast only exists for the months we tested it on; outside them a battery plans without one.</p>
+      </div>
+    </fieldset>
+
+    <fieldset class="lever-group">
+      <legend>New electricity demand in Scotland</legend>
+      <p class="note">Using more power in Scotland soaks up wind that would otherwise be wasted. Sizes are averages over a full year.</p>
+      <div class="lever">
+        <label for="demand-zone">Where</label>
+        <select id="demand-zone" aria-label="Where the new demand is">
+          <option value="north_scotland">North of B4 (Highlands, Aberdeenshire)</option>
+          <option value="south_scotland">Between B4 and B6 (Central Belt, Borders)</option>
+        </select>
+      </div>
+      <div class="lever">
+        <label for="dem-hp">Heat pumps</label>
+        <div class="lever-row"><input type="range" id="dem-hp" min="0" max="3" step="0.1" value="0"><output id="dem-hp-out"></output></div>
+        <p class="note">Mostly in winter and at breakfast and teatime, following typical Scottish temperatures.</p>
+      </div>
+      <div class="lever">
+        <label for="dem-ev">Electric car charging</label>
+        <div class="lever-row"><input type="range" id="dem-ev" min="0" max="2" step="0.1" value="0"><output id="dem-ev-out"></output></div>
+        <p class="note">Mostly overnight and in the evening.</p>
+      </div>
+      <div class="lever">
+        <label for="dem-dc">Data centres</label>
+        <div class="lever-row"><input type="range" id="dem-dc" min="0" max="3" step="0.1" value="0"><output id="dem-dc-out"></output></div>
+        <p class="note">The same all day, every day.</p>
+      </div>
+    </fieldset>
+
+    <fieldset class="lever-group">
+      <legend>Prices</legend>
+      <p class="note">These only change the £ and CO₂ figures, not how much wind is wasted or which farms are switched off.</p>
+      <div class="lever">
+        <label for="eco-gas">Gas price</label>
+        <div class="lever-row"><input type="range" id="eco-gas" min="20" max="200" step="5" value="80"><output id="eco-gas-out"></output></div>
+      </div>
+      <div class="lever">
+        <label for="eco-carbon">Carbon price</label>
+        <div class="lever-row"><input type="range" id="eco-carbon" min="0" max="200" step="5" value="50"><output id="eco-carbon-out"></output></div>
+      </div>
+      <div class="lever">
+        <label for="eco-intensity">CO₂ per MWh of gas power</label>
+        <div class="lever-row"><input type="range" id="eco-intensity" min="0.3" max="0.5" step="0.01" value="0.37"><output id="eco-intensity-out"></output></div>
+      </div>
+      <div class="lever">
+        <label for="eco-switch">Switch-off payments</label>
+        <div class="lever-row"><input type="range" id="eco-switch" min="0" max="3" step="0.1" value="1"><output id="eco-switch-out"></output></div>
+        <p class="note">1× = what farms really bid to switch off.</p>
       </div>
     </fieldset>
 
@@ -288,7 +340,7 @@
       <span id="method-version"></span></p>
 
     <div class="block">
-      <h3>Reveal: wasted wind power <span class="tag-est">our estimate</span></h3>
+      <h3>History: wasted wind power <span class="tag-est">our estimate</span></h3>
       <p class="note">Nobody publishes waste per farm. We rebuild it two independent ways.</p>
       <ul class="method-list">
         <li><b>Method A (market):</b> each farm tells the grid what it plans to generate (its Physical Notification).
@@ -303,7 +355,7 @@
     </div>
 
     <div class="block">
-      <h3>Predict: tomorrow's waste <span class="tag-est">forecast</span></h3>
+      <h3>Forecast: tomorrow's waste <span class="tag-est">forecast</span></h3>
       <p id="method-validation" class="note"></p>
       <div class="table-wrap"><table id="method-models" class="table"></table></div>
       <p class="note">Error = mean absolute error per farm-hour (lower is better). Caught = share of real waste
@@ -322,7 +374,7 @@
     </div>
 
     <div class="block">
-      <h3>Autopilot: batteries</h3>
+      <h3>Batteries</h3>
       <p id="method-basis" class="note"></p>
       <ul id="method-caveats" class="method-list"></ul>
     </div>
@@ -337,7 +389,13 @@
         <li><b>The constraint flag isn't perfect.</b> We count turn-downs the operator marks as system actions. Some ordinary balancing may be in or out.</li>
         <li><b>33 farms, hand-checked</b> (the top Scottish units by constraint volume), coordinates approximate. Smaller farms are in the background "residual".</li>
         <li><b>NESO's day-ahead limits have no publication time.</b> We assume they're known by 10:00 the day before; the model without them is almost as good (see above).</li>
-        <li><b>Batteries are a simple model:</b> no costs, no wear, no effect on prices, and they charge only from wind that would be wasted.</li>
+        <li><b>Batteries are a simple model:</b> no costs, no wear, no effect on prices, and they charge only from wind that would be wasted.
+          They don't yet sell into spare room on a new undersea cable, so their earnings there are understated.</li>
+        <li><b>Simulator assumptions.</b> A new undersea cable carries its zone's surplus first and is available 95% of the time on average
+          (no individual outages, no cable losses), so cable results are optimistic. New demand sizes are averages over a full year: heat
+          pumps follow typical Scottish monthly temperatures, not each actual day's, which overstates what they absorb (cold days tend to
+          be calm); EVs charge mostly overnight; data centres are flat. Price controls change only £ and CO₂: a multiplier keeps the
+          farms' order and a flat price treats them all the same, so neither changes which farms are switched off.</li>
       </ul>
     </div>
 
