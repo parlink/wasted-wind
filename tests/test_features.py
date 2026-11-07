@@ -112,3 +112,38 @@ def test_forecast_output_matches_contract():
     assert not fc.duplicated(["farm_id", "hour_start", "issued_at"]).any()
     m = json.loads(METRICS.read_text())
     assert set(m["models"]) == {"lightgbm", "persistence", "climatology", "wind_rule"}
+
+
+# ---------- review #26 ----------
+
+def test_training_stops_a_day_before_the_test_month():
+    # The 1st's forecast is issued on the last day of the previous month at 10:00; that day's
+    # waste isn't complete until it ends, so training must stop at its start.
+    hours = pd.Series(pd.date_range("2026-04-28T00:00Z", "2026-05-01T05:00Z", freq="h"))
+    m = tr.train_mask(hours, pd.Timestamp("2026-05-01T00:00Z"))
+    assert hours[m].max() == pd.Timestamp("2026-04-29T23:00Z")
+
+
+def test_limits_are_forward_filled_only_never_from_later_values():
+    # Half-hourly: 2000, then 9 missing, then 2500, then an implausible 0.
+    idx = pd.date_range("2025-03-01T00:00Z", periods=12, freq="30min", name="period_start")
+    b4 = [2000.0] + [np.nan] * 9 + [2500.0, 0.0]
+    wide = pd.DataFrame({"b4_limit_mw": b4, "b6_limit_mw": [np.nan] + [4000.0] * 11}, index=idx)
+    h = ft.neso_limits_hourly(wide)
+    t = lambda s: pd.Timestamp(f"2025-03-01T{s}Z")  # noqa: E731
+    assert h.loc[t("00:00"), "B4"] == 2000            # carried forward, up to 2 h
+    assert np.isnan(h.loc[t("03:00"), "B4"])          # beyond 2 h: NaN, never the later 2500
+    assert h.loc[t("05:00"), "B4"] == 2500            # the 0 is dropped, then carried
+    assert h.loc[t("00:00"), "B6"] == 4000            # one valid half hour is enough
+
+
+def test_zone_potential_uses_the_farm_list_not_who_reported():
+    farms = pd.DataFrame({"farm_id": ["a", "b", "c"], "capacity_mw": [100.0, 200.0, 50.0],
+                          "zone": ["north_scotland", "north_scotland", "south_scotland"]})
+    h = pd.Timestamp("2025-03-01T00:00Z")
+    weather = pd.DataFrame({"farm_id": ["a", "b", "c"], "hour_start": [h] * 3, "wind_fc_ms": [12.0] * 3})
+    commissioned = pd.Series({"a": h - pd.Timedelta(days=9), "b": h + pd.Timedelta(days=1),
+                              "c": h - pd.Timedelta(days=1)})
+    z = ft.zone_potential(weather, farms, commissioned)
+    assert z.loc[h, "north_scotland"] == pytest.approx(100.0)   # b not built yet
+    assert z.loc[h, "south_scotland"] == pytest.approx(50.0)

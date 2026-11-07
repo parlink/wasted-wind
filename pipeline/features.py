@@ -7,7 +7,7 @@ timestamp (when it became known) and `check_no_leakage` asserts asof <= issued_a
 | ------------------------ | ---------------------------------------------- | ------------------------------ |
 | wind_fc_ms               | Open-Meteo previous runs, `previous_day2`      | valid time - 48 h              |
 | pot_*_mw, b4/b6 excess   | generic power curve on wind_fc x capacity      | same as wind                   |
-| b4/b6_limit_mw           | NESO day-ahead constraint limits               | assumed D-1 10:00 (see below)  |
+| b4/b6_limit_mw           | raw NESO day-ahead limits, ffill <= 2 h only   | assumed D-1 10:00 (see below)  |
 | gb_demand_fc_mw          | Elexon NDF, latest publish <= issue time       | that publishTime               |
 | lag48_mwh                | Part 1 waste in the same hour 2 days earlier   | end of that hour               |
 | trailing_waste_rate      | Part 1 waste over the 30 days ending D-2 00:00 | D-2 00:00                      |
@@ -123,10 +123,43 @@ def hourly_target(curt: pd.DataFrame) -> pd.DataFrame:
 
 # ---------- assemble ----------
 
-def hourly_limits(residual: pd.DataFrame) -> pd.DataFrame:
-    """Hourly mean B4 / B6 limit (MW) from rows with period_start, boundary, boundary_limit_mw."""
-    return (residual.assign(hour_start=residual.period_start.dt.floor("h"))
-            .pivot_table(index="hour_start", columns="boundary", values="boundary_limit_mw", aggfunc="mean"))
+LIMIT_CARRY_PERIODS = 4          # carry a missing NESO limit forward at most 2 h
+MIN_PLAUSIBLE_LIMIT_MW = 100.0   # NESO occasionally publishes 0
+
+
+def neso_limits_hourly(wide: pd.DataFrame) -> pd.DataFrame:
+    """Hourly B4 / B6 limits (MW) from NESO's half-hourly day-ahead series.
+
+    `wide` is residual.boundary_series output (index period_start; b4_limit_mw, b6_limit_mw).
+    Gaps are only ever filled from EARLIER values (at most 2 h), never interpolated or
+    back-filled, so no limit depends on data published later. Longer gaps stay NaN.
+    """
+    out = {}
+    for b in ("b4", "b6"):
+        s = wide[f"{b}_limit_mw"].where(wide[f"{b}_limit_mw"] >= MIN_PLAUSIBLE_LIMIT_MW)
+        s = s.ffill(limit=LIMIT_CARRY_PERIODS)
+        out[b.upper()] = s.groupby(s.index.floor("h")).mean()
+    return pd.DataFrame(out).rename_axis("hour_start")
+
+
+def commissioning(curt: pd.DataFrame) -> pd.Series:
+    """First half hour each farm appears in Part 1 (its first PN): a public, ex-ante fact."""
+    return curt.groupby("farm_id").period_start.min()
+
+
+def zone_potential(weather: pd.DataFrame, farms: pd.DataFrame, commissioned: pd.Series) -> pd.DataFrame:
+    """Forecast potential (MW) per zone per hour over every farm in the list that is built.
+
+    Uses the farm list, not which farms happened to report PN that hour (ex-post information).
+    """
+    cap = farms.groupby("farm_id").capacity_mw.sum()
+    zone = farms.drop_duplicates("farm_id").set_index("farm_id").zone
+    w = weather[weather.farm_id.isin(cap.index)].copy()
+    built = w.hour_start >= w.farm_id.map(commissioned)
+    w["pot"] = np.where(built, w.farm_id.map(cap) * generic_cf(w.wind_fc_ms.to_numpy()), 0.0)
+    w["zone"] = w.farm_id.map(zone)
+    z = w.pivot_table(index="hour_start", columns="zone", values="pot", aggfunc="sum")
+    return z.reindex(columns=["north_scotland", "south_scotland"]).fillna(0.0)
 
 
 def hourly_demand(ndf: pd.DataFrame, issued_at: pd.Timestamp | None = None) -> pd.DataFrame:
@@ -136,18 +169,22 @@ def hourly_demand(ndf: pd.DataFrame, issued_at: pd.Timestamp | None = None) -> p
 
 
 def build_panel(curt: pd.DataFrame, farms: pd.DataFrame, weather: pd.DataFrame,
-                residual: pd.DataFrame, ndf: pd.DataFrame) -> pd.DataFrame:
-    """All signals plus the target, one row per farm-hour with a day-ahead weather forecast."""
+                limits: pd.DataFrame, ndf: pd.DataFrame) -> pd.DataFrame:
+    """All signals plus the target, one row per farm-hour with a day-ahead weather forecast.
+
+    limits: neso_limits_hourly output.
+    """
     y = hourly_target(curt)
     p = y.merge(weather, on=["farm_id", "hour_start"], how="inner")
     p = p[p.wind_fc_ms.notna()].copy()
     p["issued_at"] = issue_time(p.hour_start)
     p["asof_wind"] = p.hour_start - WIND_LEAD
-    return add_signals(p, curt, y, farms, hourly_limits(residual), hourly_demand(ndf))
+    zone_pot = zone_potential(weather, farms, commissioning(curt))
+    return add_signals(p, curt, y, farms, limits, hourly_demand(ndf), zone_pot)
 
 
 def add_signals(p: pd.DataFrame, curt: pd.DataFrame, y: pd.DataFrame, farms: pd.DataFrame,
-                lim: pd.DataFrame, dem_h: pd.DataFrame) -> pd.DataFrame:
+                lim: pd.DataFrame, dem_h: pd.DataFrame, zone_pot: pd.DataFrame) -> pd.DataFrame:
     """Add every signal to p (farm_id, zone, hour_start, wind_fc_ms, issued_at, asof_wind).
 
     Shared by the backtest panel and the live "tomorrow" rows, so both see identical features.
@@ -158,9 +195,8 @@ def add_signals(p: pd.DataFrame, curt: pd.DataFrame, y: pd.DataFrame, farms: pd.
     p["capacity_mw"] = p.farm_id.map(cap)
     p["pot_farm_mw"] = p.capacity_mw * generic_cf(p.wind_fc_ms.to_numpy())
 
-    zone_pot = p.pivot_table(index="hour_start", columns="zone", values="pot_farm_mw", aggfunc="sum")
-    p["pot_north_mw"] = p.hour_start.map(zone_pot.get("north_scotland")).fillna(0.0)
-    p["pot_south_mw"] = p.hour_start.map(zone_pot.get("south_scotland")).fillna(0.0)
+    p["pot_north_mw"] = p.hour_start.map(zone_pot["north_scotland"]).fillna(0.0)
+    p["pot_south_mw"] = p.hour_start.map(zone_pot["south_scotland"]).fillna(0.0)
 
     p["b4_limit_mw"] = p.hour_start.map(lim["B4"])
     p["b6_limit_mw"] = p.hour_start.map(lim["B6"])
@@ -194,8 +230,13 @@ def load_and_build() -> pd.DataFrame:
     curt = pd.read_parquet(PROCESSED / "curtailment.parquet",
                            columns=["farm_id", "zone", "period_start", "curtailed_mwh_a", "bid_price_gbp_mwh"])
     farms = pd.read_csv(ROOT / "reference" / "farms.csv")
-    residual = pd.read_parquet(PROCESSED / "residual.parquet",
-                               columns=["period_start", "boundary", "boundary_limit_mw"])
     ndf = _concat_parquet(sorted((RAW / "elexon" / "NDF").glob("*.parquet")),
                           ["publishTime", "startTime", "demand"])
-    return build_panel(curt, farms, load_weather_forecast(), residual, ndf)
+    return build_panel(curt, farms, load_weather_forecast(), load_limits(), ndf)
+
+
+def load_limits() -> pd.DataFrame:
+    """Raw NESO day-ahead limits (not residual.parquet, whose gaps are interpolated)."""
+    from pipeline import residual as rs
+    neso = rs.parse_neso(pd.read_csv(RAW / "neso" / "day_ahead_constraints.csv", encoding="utf-8-sig"))
+    return neso_limits_hourly(rs.boundary_series(neso))
