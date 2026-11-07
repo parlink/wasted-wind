@@ -2,6 +2,8 @@
 import os
 import time
 
+import pandas as pd
+
 import numpy as np
 import pytest
 
@@ -112,3 +114,77 @@ def test_full_size_run_is_fast():
     print(f"\nfull-size run: {no_batt*1000:.0f} ms without batteries, {with_batt*1000:.0f} ms with one")
     assert no_batt < 1.0
     assert with_batt < 3.0   # generous for slow CI machines; locally it should be well under 1 s
+
+
+# ---------- review of #22 (Aradhya) ----------
+
+def _record_plan_signals(monkeypatch, quality):
+    """Run a battery scenario and capture what each day's plan_day call was told."""
+    seen = []
+    real = engine.plan_day
+
+    def spy(battery, curtailment_mwh, price, headroom, soc):
+        seen.append(np.array(curtailment_mwh, dtype=float))
+        return real(battery, curtailment_mwh, price, headroom, soc)
+    monkeypatch.setattr(engine, "plan_day", spy)
+    inp = engine.load_inputs()
+    engine.run_core(inp, engine.with_defaults({"batteries": [BATTERY], "forecast_quality": quality}))
+    return inp, seen
+
+
+def test_no_forecast_battery_knows_nothing_about_future_waste(monkeypatch):
+    _, seen = _record_plan_signals(monkeypatch, "none")
+    assert seen and all((s == 0).all() for s in seen)
+
+
+def test_our_forecast_battery_is_told_the_forecast_not_the_actual(monkeypatch):
+    inp, seen = _record_plan_signals(monkeypatch, "ours")
+    expected = np.nan_to_num(inp.fc_n) + np.nan_to_num(inp.fc_s)
+    np.testing.assert_allclose(np.concatenate(seen), expected[: len(seen) * 48])
+
+
+def test_forecast_after_day_ahead_cutoff_is_ignored(tmp_path, monkeypatch):
+    from app import data
+    fc = data.table("forecast.parquet")[0].copy()
+    late = fc.copy()
+    late["issued_at"] = late["hour_start"] - pd.Timedelta(hours=1)     # issued on the day: leaky
+    late["curtailed_mwh_pred"] = 1e6
+    cutoff = fc["hour_start"].dt.normalize() - pd.Timedelta(hours=14)
+    assert (fc["issued_at"] <= cutoff).all()
+    kept = pd.concat([fc, late])
+    kept = kept[kept["issued_at"] <= kept["hour_start"].dt.normalize() - pd.Timedelta(hours=14)]
+    assert kept["curtailed_mwh_pred"].max() < 1e6
+    inp = engine.load_inputs()
+    assert np.nanmax(inp.fc_n) < 1e5        # the real loader applies the same cutoff
+
+
+def test_battery_soc_and_energy_conservation():
+    inp = engine.load_inputs()
+    r = engine.run_core(inp, engine.with_defaults({"batteries": [BATTERY], "forecast_quality": "perfect"}))
+    p = r["plans"][0]
+    assert (p["soc_mwh"] >= -1e-9).all() and (p["soc_mwh"] <= BATTERY["energy_mwh"] + 1e-9).all()
+    energy_in = p["charge"].sum() * engine.H
+    energy_out = p["discharge"].sum() * engine.H
+    assert energy_out <= energy_in * BATTERY["efficiency"] + 1e-6
+    assert (p["charge"] * p["discharge"] == 0).all()          # never both in one half hour
+
+
+def test_wind_lever_is_continuous_near_cut_in():
+    from sim.levers import potential_mw
+    planned = np.array([[200.0]]); cap = np.array([300.0]); v = np.array([[4.0]])   # below MIN_CF
+    a, b = potential_mw(planned, v, cap, 1.0), potential_mw(planned, v, cap, 1.01)
+    assert abs(b - a).max() < 5.0, (a, b)
+
+
+def test_windier_storm_never_wastes_less():
+    from sim.levers import potential_mw
+    planned = np.array([[250.0]]); cap = np.array([300.0]); v = np.array([[21.0]])   # strong hourly mean
+    assert potential_mw(planned, v, cap, 1.3)[0, 0] >= potential_mw(planned, v, cap, 1.0)[0, 0]
+    wastes = [total(simulate({"weather": {"wind_scale": s}})) for s in (0.7, 0.9, 1.0, 1.1, 1.3)]
+    assert all(b >= a - 1e-12 for a, b in zip(wastes, wastes[1:])), wastes
+
+
+def test_reports_input_quality():
+    r = simulate({})
+    assert r["input_quality"]["dropped_bmus"] == []
+    assert isinstance(r["input_quality"]["gaps"], dict)

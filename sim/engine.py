@@ -15,7 +15,7 @@ results are sliced to the requested window (lever 12).
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 import numpy as np
@@ -77,6 +77,9 @@ class Inputs:
     price: np.ndarray             # (T,) market price £/MWh
     fc_n: np.ndarray              # (T,) forecast waste behind each zone, MWh per half hour, NaN if none
     fc_s: np.ndarray
+    data_gaps: dict = field(default_factory=dict)       # residual/limit/price gaps and how they were filled
+    dropped_bmus: list = field(default_factory=list)    # in curtailment but not in farms.csv
+    dropped_curtailed_mwh: float = 0.0
 
     @staticmethod
     def synthetic(rng, T: int, U: int) -> "Inputs":
@@ -98,16 +101,19 @@ def _wide(df: pd.DataFrame, col: str, periods, bmus) -> np.ndarray:
 CORE_FILES = ("curtailment.parquet", "residual.parquet", "farms.csv")
 
 
+GAP_FILL_PERIODS = 48   # carry a residual/limit value forward at most one day; longer gaps use the median
+
+
 @lru_cache(maxsize=2)
 def _load(signature: tuple, source: str) -> Inputs:
     # one consistent dataset: real only if curtailment AND residual are real (see data.group_source)
     curt, _ = data.table("curtailment.parquet", source)
     resid, _ = data.table("residual.parquet", source)
     farms, _ = data.table("farms.csv", source)
-    fc_path, fc_source = data.resolve("forecast.parquet")
+    _, fc_source = data.resolve("forecast.parquet")
     if fc_source == source:
         fc, _ = data.table("forecast.parquet", source)
-    else:   # fake forecast with real farms is meaningless: plan without one (reactive fallback)
+    else:   # fake forecast with real farms is meaningless: plan without one
         fc = data.table("forecast.parquet", "fixtures")[0].iloc[:0]
 
     periods = pd.DatetimeIndex(sorted(curt["period_start"].unique()))
@@ -117,6 +123,7 @@ def _load(signature: tuple, source: str) -> Inputs:
     # dispatch priority: least negative median bid first (cheapest for NESO), unknown last
     med = curt.groupby("bmu_id")["bid_price_gbp_mwh"].median()
     units = farms[farms["bmu_id"].isin(curt["bmu_id"].unique())].copy()
+    dropped = sorted(set(curt["bmu_id"]) - set(units["bmu_id"]))
     units["med_bid"] = units["bmu_id"].map(med)
     units = units.sort_values("med_bid", ascending=False, na_position="last")
     bmus = units["bmu_id"].tolist()
@@ -127,11 +134,21 @@ def _load(signature: tuple, source: str) -> Inputs:
     fallback = units["med_bid"].fillna(med.median() if med.notna().any() else -50.0).to_numpy()
     bid = np.where(np.isnan(bid), fallback[None, :], bid)
 
-    def zone_series(zone, col, fill=0.0):
-        s = resid[resid["zone"] == zone].set_index("period_start")[col].reindex(periods)
-        return s.ffill().bfill().fillna(fill).to_numpy(float)
+    gaps = {}
 
-    # forecast waste per zone, hourly -> half-hourly (latest issue per farm-hour)
+    def zone_series(zone, col, fill=0.0):
+        """Forward-fill short gaps only (never copy future values back); long gaps -> median."""
+        s = resid[resid["zone"] == zone].set_index("period_start")[col].reindex(periods)
+        missing = int(s.isna().sum())
+        s = s.ffill(limit=GAP_FILL_PERIODS)
+        if missing:
+            gaps[f"{zone}.{col}"] = {"missing_periods": missing, "filled_with_median": int(s.isna().sum())}
+        return s.fillna(s.median() if s.notna().any() else fill).to_numpy(float)
+
+    # forecast waste per farm-hour: only the day-ahead issue (by D-1 10:00 UTC), never later ones
+    if len(fc):
+        cutoff = fc["hour_start"].dt.normalize() - pd.Timedelta(hours=14)
+        fc = fc[fc["issued_at"] <= cutoff]
     f = fc.sort_values("issued_at").drop_duplicates(["farm_id", "hour_start"], keep="last")
     fz = f.groupby(["zone", "hour_start"])["curtailed_mwh_pred"].sum()
 
@@ -142,7 +159,7 @@ def _load(signature: tuple, source: str) -> Inputs:
         s.index = pd.DatetimeIndex(s.index)
         return (s.reindex(periods.floor("h")) / 2).to_numpy(float)
 
-    return Inputs(
+    inp = Inputs(
         periods=periods, bmu=bmus, farm=units["farm_id"].to_numpy(), north=(units["zone"] == "north_scotland").to_numpy(),
         cap_mw=units["capacity_mw"].to_numpy(float), planned_mw=planned,
         wind_ms=_wide(curt, "wind_speed_100m_ms", periods, bmus), bid_gbp_mwh=bid, hist_curtailed_mwh=hist,
@@ -152,6 +169,10 @@ def _load(signature: tuple, source: str) -> Inputs:
         price=zone_series("north_scotland", "market_price_gbp_mwh"),
         fc_n=fc_series("north_scotland"), fc_s=fc_series("south_scotland"),
     )
+    inp.data_gaps = gaps
+    inp.dropped_bmus = dropped
+    inp.dropped_curtailed_mwh = float(curt.loc[curt["bmu_id"].isin(dropped), "curtailed_mwh_a"].sum())
+    return inp
 
 
 def input_source() -> str:
@@ -182,16 +203,43 @@ def _boundaries(pot_n, pot_s, res_n, res_s, l4, l6, net_n=0.0, net_s=0.0):
 
 
 def _price_expectation(price: np.ndarray, days: int) -> np.ndarray:
-    """Average price for each half hour over the previous 7 days (day 0 uses its own day)."""
+    """Average price for each half hour over the previous 7 days. Day 0 has no history, so it
+    gets NaN: the dispatcher has no price signal that day rather than peeking at it."""
     p = price[: days * 48].reshape(days, 48)
-    out = np.empty_like(p)
-    for d in range(days):
-        out[d] = np.nanmean(p[max(0, d - 7):d] if d else p[:1], axis=0)
-    return np.nan_to_num(out, nan=np.nanmean(price) if np.isfinite(price).any() else 0.0)
+    out = np.full_like(p, np.nan)
+    for d in range(1, days):
+        out[d] = np.nanmean(p[max(0, d - 7):d], axis=0)
+    return out
+
+
+def planning_signals(inp: Inputs, q: str, waste_n: np.ndarray, waste_s: np.ndarray):
+    """What each battery is told about waste when it plans a day (lever 13).
+
+    perfect: the actual would-be waste (the hindsight ceiling)
+    ours:    the day-ahead forecast; hours without one carry no information (0) and are counted
+    none:    no information about future waste at all; the battery can only react live
+    A North battery can absorb B4 and B6 waste, i.e. waste at any Scottish farm, so it is told
+    the North + South forecast; a South battery only B6 waste, so the South forecast.
+    Returns (signal_north, signal_south, hours_without_forecast_north, ..._south).
+    """
+    T = len(waste_n)
+    if q == "perfect":
+        return waste_n, waste_s, 0, 0
+    if q == "none":
+        return np.zeros(T), np.zeros(T), 0, 0
+    fc_n, fc_s = inp.fc_n[:T], inp.fc_s[:T]
+    sig_n = np.nan_to_num(fc_n) + np.nan_to_num(fc_s)
+    return sig_n, np.nan_to_num(fc_s), int((np.isnan(fc_n) & np.isnan(fc_s)).sum()), int(np.isnan(fc_s).sum())
 
 
 def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0):
-    """Plan each battery a day ahead with the dispatcher, then execute half hour by half hour."""
+    """Plan each battery a day ahead with the dispatcher, then execute half hour by half hour.
+
+    Execution reacts to what is happening now whatever the plan said: a battery with room
+    charges from live waste in its zone (it sees constraint instructions as they happen). So
+    forecast quality changes only the *plan* (being empty before a storm, not selling stored
+    energy too early), and the gap between qualities is the value of the forecast.
+    """
     T, days = len(pot_n), len(pot_n) // 48
     bats = sc["batteries"]
     waste_n = (ex4_0 + ex6_0) * H           # MWh a North battery could absorb
@@ -199,24 +247,18 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
     head_n = np.maximum(0.0, np.minimum(l4 - flow4_0, l6 - flow6_0))
     head_s = np.maximum(0.0, l6 - flow6_0)
     price_exp = _price_expectation(inp.price, days)
-    q = sc["forecast_quality"]
-
-    def signal(zone_north):
-        actual = waste_n if zone_north else waste_s
-        if q == "perfect":
-            return actual, 0
-        reactive = np.r_[0.0, actual[:-1]]      # what's happening right now
-        if q == "none":
-            return reactive, 0
-        fc = inp.fc_n if zone_north else inp.fc_s
-        return np.where(np.isnan(fc), reactive, fc), int(np.isnan(fc).sum())
+    sig_n, sig_s, fb_n, fb_s = planning_signals(inp, sc["forecast_quality"], waste_n, waste_s)
 
     plans = []
     for b in bats:
         north = b["zone"] == "north_scotland"
-        sig, fallback = signal(north)
-        plans.append({"north": north, "sig": sig, "fallback": fallback, "soc": 0.0,
-                      "head": head_n if north else head_s, "charge": np.zeros(T), "discharge": np.zeros(T)})
+        plans.append({"north": north, "sig": sig_n if north else sig_s, "fallback": fb_n if north else fb_s,
+                      "soc": 0.0, "head": head_n if north else head_s,
+                      "charge": np.zeros(T), "discharge": np.zeros(T), "soc_mwh": np.zeros(T)})
+
+    def charge(b, p, want, cap):
+        room = (b["energy_mwh"] - p["soc"]) / (H * b["efficiency"])
+        return max(0.0, min(want, b["power_mw"], room, cap))
 
     net_n, net_s = np.zeros(T), np.zeros(T)
     res_n, res_s = inp.res_n, inp.res_s
@@ -225,34 +267,36 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
         day_plans = [plan_day(b, p["sig"][sl], price_exp[d], p["head"][sl], p["soc"]) for b, p in zip(bats, plans)]
         for i in range(d * 48, d * 48 + 48):
             j = i - d * 48
-            # charging: North batteries first (they can absorb B4 and B6 waste), then South
+            # charging from would-be waste: North batteries first (B4 and B6 waste), then South
             s_n = pot_n[i] + res_n[i]
             room_n = ex4_0[i] + ex6_0[i]
             cn = 0.0
             for b, p, dp in zip(bats, plans, day_plans):
-                if p["north"] and dp["action"][j] == "charge":
-                    c = min(dp["power_mw"][j], b["power_mw"], (b["energy_mwh"] - p["soc"]) / (H * b["efficiency"]), room_n - cn)
-                    c = max(c, 0.0); p["charge"][i] = c; p["soc"] += c * H * b["efficiency"]; cn += c
+                if p["north"] and dp["action"][j] != "discharge":
+                    want = dp["power_mw"][j] if dp["action"][j] == "charge" else b["power_mw"]
+                    c = charge(b, p, want, room_n - cn)
+                    p["charge"][i] = c; p["soc"] += c * H * b["efficiency"]; cn += c
             ex4 = min(max(s_n - cn - l4[i], 0.0), pot_n[i])
             flow4 = s_n - cn - ex4
             s_s = pot_s[i] + res_s[i] + flow4
             ex6 = min(max(s_s - l6[i], 0.0), pot_n[i] + pot_s[i] - ex4)
             cs = 0.0
             for b, p, dp in zip(bats, plans, day_plans):
-                if not p["north"] and dp["action"][j] == "charge":
-                    c = min(dp["power_mw"][j], b["power_mw"], (b["energy_mwh"] - p["soc"]) / (H * b["efficiency"]), ex6 - cs)
-                    c = max(c, 0.0); p["charge"][i] = c; p["soc"] += c * H * b["efficiency"]; cs += c
+                if not p["north"] and dp["action"][j] != "discharge":
+                    want = dp["power_mw"][j] if dp["action"][j] == "charge" else b["power_mw"]
+                    c = charge(b, p, want, ex6 - cs)
+                    p["charge"][i] = c; p["soc"] += c * H * b["efficiency"]; cs += c
             flow6 = s_s - cs - max(ex6 - cs, 0.0)
             # discharging: only into spare boundary capacity, so it never creates waste
             for b, p, dp in zip(bats, plans, day_plans):
-                if dp["action"][j] != "discharge":
-                    continue
-                room = min(l4[i] - flow4, l6[i] - flow6) if p["north"] else l6[i] - flow6
-                dmw = max(0.0, min(dp["power_mw"][j], b["power_mw"], p["soc"] / H, room))
-                p["discharge"][i] = dmw; p["soc"] -= dmw * H
-                flow6 += dmw
-                if p["north"]:
-                    flow4 += dmw
+                if dp["action"][j] == "discharge":
+                    room = min(l4[i] - flow4, l6[i] - flow6) if p["north"] else l6[i] - flow6
+                    dmw = max(0.0, min(dp["power_mw"][j], b["power_mw"], p["soc"] / H, room))
+                    p["discharge"][i] = dmw; p["soc"] -= dmw * H
+                    flow6 += dmw
+                    if p["north"]:
+                        flow4 += dmw
+                p["soc_mwh"][i] = p["soc"]
             net_n[i] = -cn + sum(p["discharge"][i] for p in plans if p["north"])
             net_s[i] = -cs + sum(p["discharge"][i] for p in plans if not p["north"])
     return net_n, net_s, plans
@@ -320,11 +364,10 @@ _baseline_cache: dict = {}
 
 
 def _baseline(inp: Inputs) -> dict:
-    key = id(inp)
-    if key not in _baseline_cache:
-        _baseline_cache.clear()
-        _baseline_cache[key] = run_core(inp, with_defaults({}))
-    return _baseline_cache[key]
+    # compare by identity while holding a reference, so a recycled id() can never match
+    if _baseline_cache.get("inp") is not inp:
+        _baseline_cache.update(inp=inp, res=run_core(inp, with_defaults({})))
+    return _baseline_cache["res"]
 
 
 def _is_baseline(sc: dict) -> bool:
@@ -371,6 +414,8 @@ def simulate(scenario: dict) -> dict:
                   for f in bf.sort_values(ascending=False).index],
         "dispatcher": DISPATCHER if sc["batteries"] else None,
         "data_source": input_source(),
+        "input_quality": {"gaps": inp.data_gaps, "dropped_bmus": inp.dropped_bmus,
+                          "dropped_curtailed_mwh": round(inp.dropped_curtailed_mwh, 1)},
         "levers_not_yet_applied": ignored,
     }
 

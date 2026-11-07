@@ -32,20 +32,25 @@ def calibration_by_month() -> dict:
 
 def calibration_report() -> dict:
     inp, sim, hist = _frames()
-    h_tot, s_tot = float(hist.to_numpy().sum()), float(sim.to_numpy().sum())
+    # units missing from farms.csv aren't simulated: count their waste as history the sim misses
+    h_tot = float(hist.to_numpy().sum()) + inp.dropped_curtailed_mwh
+    s_tot = float(sim.to_numpy().sum())
     zone = pd.Series(inp.north, index=inp.bmu).map({True: "north_scotland", False: "south_scotland"})
     by_zone = {z: {"historical_mwh": round(float(hist.loc[:, zone == z].to_numpy().sum()), 1),
                    "simulated_mwh": round(float(sim.loc[:, zone == z].to_numpy().sum()), 1)} for z in zone.unique()}
     farm = pd.Series(inp.farm, index=inp.bmu)
     by_farm = pd.DataFrame({"historical_mwh": hist.sum().groupby(farm).sum(),
                             "simulated_mwh": sim.sum().groupby(farm).sum()})
-    by_farm["error_pct"] = (by_farm["simulated_mwh"] / by_farm["historical_mwh"] - 1) * 100
+    hist_pos = by_farm["historical_mwh"].where(by_farm["historical_mwh"] > 0)
+    by_farm["error_pct"] = (by_farm["simulated_mwh"] / hist_pos - 1) * 100   # NaN where no history
     daily_h, daily_s = hist.sum(axis=1).resample("1D").sum(), sim.sum(axis=1).resample("1D").sum()
     return {
         "historical_twh": h_tot / 1e6, "simulated_twh": s_tot / 1e6,
         "error_pct": (s_tot / h_tot - 1) * 100 if h_tot else None,
         "daily_correlation": float(daily_h.corr(daily_s)) if len(daily_h) > 2 else None,
         "by_zone": by_zone,
+        "by_boundary_simulated_mwh": {"B4": float(_baseline(inp)["ex4"].sum() * H), "B6": float(_baseline(inp)["ex6"].sum() * H)},
+        "dropped_bmus": inp.dropped_bmus,
         "by_farm": by_farm.sort_values("historical_mwh", ascending=False).round(1),
     }
 
