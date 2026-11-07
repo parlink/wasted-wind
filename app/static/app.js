@@ -822,23 +822,33 @@ async function loadSimulate() {
 
 const AP_COLORS = { charge: C.planned, discharge: C.waste, hold: C.grid };
 const STRATEGY_NAMES = { do_nothing: "Do nothing", reactive: "No forecast (reactive)", forecast: "Our forecast", perfect: "Perfect hindsight" };
-state.ap = { scorecard: null, day: null, date: null, strategy: "forecast", battery: null, step: -1, timer: null };
+state.ap = { scorecard: null, day: null, date: null, strategy: "forecast", planner: "rule", battery: null, step: -1, timer: null };
 let apInit = false;
+
+function apHasLpPlanner() {   // #13: the LP also plans reactive/forecast batteries
+  return state.ap.scorecard.results.some((r) => r.strategy === "forecast" && r.dispatcher === "lp");
+}
 
 function apResults() {
   const sc = state.ap.scorecard;
-  // the rule dispatcher for each strategy; "perfect" uses the optimiser's true ceiling once it exists
-  const out = Object.fromEntries(sc.results.filter((r) => r.dispatcher === "rule").map((r) => [r.strategy, r]));
-  const lp = sc.results.find((r) => r.strategy === "perfect" && r.dispatcher === "lp");
-  if (lp) out.perfect = lp;
+  // each strategy under the chosen planner (rule rows where that planner has none, e.g. do nothing);
+  // "perfect" is always the optimiser's true ceiling once it exists
+  const pick = (strategy) => sc.results.find((r) => r.strategy === strategy && r.dispatcher === state.ap.planner)
+    || sc.results.find((r) => r.strategy === strategy && r.dispatcher === "rule");
+  const out = {};
+  for (const k of ["do_nothing", "reactive", "forecast"]) { const r = pick(k); if (r) out[k] = r; }
+  out.perfect = sc.results.find((r) => r.strategy === "perfect" && r.dispatcher === "lp")
+    || sc.results.find((r) => r.strategy === "perfect");
+  if (!out.perfect) delete out.perfect;
   return out;
 }
 
 function holdoutText(sc) {
   const h = sc.holdout && sc.holdout.capture_ratio;
-  if (!h || h["forecast/rule"] == null || h["reactive/rule"] == null) return "";
-  return `On months the dispatcher was never tuned on (${sc.holdout.months.join(", ")}): ` +
-    `${fmtPct(h["forecast/rule"])} vs ${fmtPct(h["reactive/rule"])}.`;
+  const p = state.ap.planner, f = h && h[`forecast/${p}`], r = h && h[`reactive/${p}`];
+  if (f == null || r == null) return "";
+  return `On months the planning rules were not tuned on (${sc.holdout.months.join(", ")}): ` +
+    `${fmtPct(f)} vs ${fmtPct(r)}.`;
 }
 
 function apLpCeiling() {
@@ -881,6 +891,7 @@ async function loadApDay() {
     const q = new URLSearchParams({ strategy: state.ap.strategy });
     if (state.ap.date) q.set("date", state.ap.date);
     if (state.ap.battery) q.set("battery_id", state.ap.battery);
+    if (state.ap.strategy !== "perfect") q.set("dispatcher", state.ap.planner);
     const day = await api(`/api/autopilot/schedule?${q}`);
     state.ap.day = day;
     noteSource("battery schedules", day.meta);
@@ -989,6 +1000,11 @@ async function loadAutopilot() {
       state.ap.battery = (state.ap.scorecard.batteries[0] || {}).battery_id || null;
       sel.addEventListener("change", (e) => { state.ap.battery = e.target.value; loadApDay(); });
       $("ap-strategy").addEventListener("change", (e) => { state.ap.strategy = e.target.value; loadApDay(); });
+      const planner = $("ap-planner");
+      planner.hidden = !apHasLpPlanner();
+      if (apHasLpPlanner()) state.ap.planner = "lp";
+      planner.value = state.ap.planner;
+      planner.addEventListener("change", (e) => { state.ap.planner = e.target.value; renderScorecard(); loadApDay(); });
       $("ap-date").addEventListener("change", (e) => { if (e.target.value) { state.ap.date = e.target.value; loadApDay(); } });
       $("ap-prev").addEventListener("click", () => shiftApDay(-1));
       $("ap-next").addEventListener("click", () => shiftApDay(1));
