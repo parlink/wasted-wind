@@ -193,7 +193,7 @@
           <option value="south_scotland">From between B4 and B6 (e.g. Torness)</option>
         </select>
         <div class="lever-row" id="link-size-row" hidden><input type="range" id="link-gw" min="0.5" max="4" step="0.5" value="2" aria-label="Cable size"><output id="link-gw-out"></output></div>
-        <p class="note">It skips the pinch points: power from that zone can go straight south under the sea. Assumed available 95% of the time.</p>
+        <p class="note">It skips the pinch points: power from that zone can go straight south under the sea. Treated as 95% of its size all the time, with no outages or cable losses, so results are a little optimistic.</p>
       </div>
     </fieldset>
 
@@ -217,7 +217,7 @@
 
     <fieldset class="lever-group">
       <legend>New electricity demand in Scotland</legend>
-      <p class="note">Using more power in Scotland soaks up wind that would otherwise be wasted. Sizes are the yearly average.</p>
+      <p class="note">Using more power in Scotland soaks up wind that would otherwise be wasted. Sizes are averages over a full year.</p>
       <div class="lever">
         <label for="demand-zone">Where</label>
         <select id="demand-zone" aria-label="Where the new demand is">
@@ -244,7 +244,7 @@
 
     <fieldset class="lever-group">
       <legend>Prices</legend>
-      <p class="note">These only change the £ and CO₂ figures, not how much wind is wasted.</p>
+      <p class="note">These only change the £ and CO₂ figures, not how much wind is wasted or which farms are switched off.</p>
       <div class="lever">
         <label for="eco-gas">Gas price</label>
         <div class="lever-row"><input type="range" id="eco-gas" min="20" max="200" step="5" value="80"><output id="eco-gas-out"></output></div>
@@ -398,8 +398,10 @@
         <li><b>Batteries are a simple model:</b> no costs, no wear, no effect on prices, and they charge only from wind that would be wasted.
           They don't yet sell into spare room on a new undersea cable, so their earnings there are understated.</li>
         <li><b>Simulator assumptions.</b> A new undersea cable carries its zone's surplus first and is available 95% of the time on average
-          (no individual outages). New demand is a yearly average: heat pumps follow typical Scottish monthly temperatures, not each
-          actual day's; EVs charge mostly overnight; data centres are flat. Price controls change only £ and CO₂, not who is switched off.</li>
+          (no individual outages, no cable losses), so cable results are optimistic. New demand sizes are averages over a full year: heat
+          pumps follow typical Scottish monthly temperatures, not each actual day's, which overstates what they absorb (cold days tend to
+          be calm); EVs charge mostly overnight; data centres are flat. Price controls change only £ and CO₂: a multiplier keeps the
+          farms' order and a flat price treats them all the same, so neither changes which farms are switched off.</li>
       </ul>
     </div>
 

@@ -47,9 +47,12 @@ def potential_mw(planned_mw: np.ndarray, wind_ms: np.ndarray, cap_mw: np.ndarray
 
 # ---------- lever 6: Scottish demand growth ----------
 
-# Typical Scottish monthly mean air temperature, deg C (Met Office 1991-2020 climate averages, rounded).
-# The data has no temperature column, so heat pumps follow the usual year, not each actual day.
-SCOTLAND_MONTHLY_TEMP_C = np.array([3.5, 3.8, 5.2, 7.3, 10.0, 12.6, 14.4, 14.1, 12.0, 8.9, 5.9, 3.7])
+# Typical Scottish monthly mean air temperature, deg C: Met Office UK climate averages 1991-2020, Scotland
+# district (https://www.metoffice.gov.uk/research/climate/maps-and-data/uk-climate-averages), approximate.
+# Stop-gap: the data has no temperature column yet, so heat pumps follow the usual year, not each actual day.
+# That OVERSTATES what heat pumps absorb (cold Scottish days tend to be calm, windy days mild); a daily
+# Open-Meteo temperature series per zone is requested from the data side (#15 review).
+SCOTLAND_MONTHLY_TEMP_C = np.array([3.3, 3.6, 4.9, 7.0, 9.7, 12.3, 13.9, 13.6, 11.7, 8.6, 5.6, 3.5])
 HEATING_BASE_C = 15.5      # UK degree-day base: below this, homes need heating
 
 # Hour-of-day shapes (UTC), relative; each is normalised to mean 1 below.

@@ -334,7 +334,7 @@ class DemandGrowth(_Strict):
 
 class SwitchOffPrice(_Strict):
     mode: Literal["multiplier", "flat"] = "multiplier"
-    value: float = 1.0
+    value: float = Field(1.0, ge=0)   # multiplier on the farms' bids, or a flat £/MWh paid to them
 
 
 class Scenario(_Strict):
