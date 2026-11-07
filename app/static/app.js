@@ -542,7 +542,8 @@ async function loadFarmDetail() {
   const r = hasB ? pearson(a, b) : null;
   $("ab-note").textContent = !hasB ? "The weather cross-check isn't available for this farm."
     : r == null ? "Not enough days to compare the two methods."
-    : `The two estimates move together ${step} to ${step}: correlation ${r.toFixed(2)} (1 = perfectly, above 0.6 is good).`;
+    : `The two estimates move together ${step} to ${step}: correlation ${r.toFixed(2)} (1 = perfectly` +
+      (step === "day" ? ", above 0.6 is good)." : "; weekly and monthly totals correlate more easily, so pick a month or less for the daily test).");
 }
 
 function selectFarm(id) {
