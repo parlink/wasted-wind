@@ -48,13 +48,16 @@
       power was thrown away, where, and what it cost.</p>
     <div class="filter-row">
       <div class="seg" role="group" aria-label="Time window">
-        <button type="button" data-mode="all" aria-pressed="true">Whole period</button>
-        <button type="button" data-mode="day" aria-pressed="false">One day</button>
+        <button type="button" data-mode="all" aria-pressed="true">All</button>
+        <button type="button" data-mode="year" aria-pressed="false">Year</button>
+        <button type="button" data-mode="month" aria-pressed="false">Month</button>
+        <button type="button" data-mode="week" aria-pressed="false">Week</button>
+        <button type="button" data-mode="day" aria-pressed="false">Day</button>
       </div>
-      <button type="button" id="play" class="icon-btn" aria-label="Play through days">▶</button>
+      <button type="button" id="play" class="icon-btn" aria-label="Play through">▶</button>
     </div>
     <div class="filter-row">
-      <input type="range" id="day-slider" min="0" max="0" value="0" aria-label="Day">
+      <input type="range" id="day-slider" min="0" max="0" value="0" aria-label="Which period">
       <span id="window-label" class="window-label"></span>
     </div>
 
@@ -92,7 +95,7 @@
       <div id="farm-sub" class="sub"></div>
       <div id="farm-legend" class="legend"></div>
       <div class="chart-box"><canvas id="farm-chart" aria-label="Planned and delivered output"></canvas></div>
-      <h4>Checked two independent ways, per day</h4>
+      <h4>Checked two independent ways</h4>
       <div id="ab-legend" class="legend"></div>
       <div class="chart-box short"><canvas id="ab-chart" aria-label="Method A and Method B daily totals"></canvas></div>
       <p id="ab-note" class="note"></p>
