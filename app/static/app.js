@@ -153,7 +153,7 @@ function lineChart(id, labels, datasets, { yLabel, tooltipLabel } = {}) {
         y: { beginAtZero: true, grid: { color: C.grid }, border: { display: false },
              title: { display: !!yLabel, text: yLabel, color: C.muted, font: { size: 11 } },
              ticks: { color: C.muted, font: { size: 11 }, maxTicksLimit: 5,
-                      callback: (v) => nf(0).format(v) } },
+                      callback: (v) => nf(Math.abs(v) >= 10 ? 0 : 2).format(v) } },
       },
     },
   });
@@ -277,12 +277,16 @@ function drawMapLegend(predict, maxV, simulate = false) {
   const node = clear($("map-legend"));
   node.append(el("div", {}, simulate ? "Circle area: waste in this scenario (indicative)"
     : predict ? "Circle area: forecast waste tomorrow" : "Circle area: energy switched off"));
+  if (!(maxV > 0)) {
+    node.append(el("div", { class: "sub" }, predict && !simulate ? "No waste forecast for any farm" : "No wind switched off here"));
+  } else {
   const sizes = el("div", { class: "sizes" });
   for (const frac of [0.1, 0.5, 1]) {
     const d = 2 * (3 + 26 * Math.sqrt(frac));
     sizes.append(el("span", {}, el("span", { class: "dot", style: { width: `${d}px`, height: `${d}px` } }), fmtEnergy(maxV * frac)));
   }
   node.append(sizes);
+  }
   if (!predict) {
     node.append(el("div", { style: { marginTop: "8px" } }, "Colour: share of planned output switched off"),
       el("div", { class: "ramp" }), el("div", { class: "ramp-labels" }, el("span", {}, "0%"), el("span", {}, "25%"), el("span", {}, "50%+")));
@@ -309,7 +313,13 @@ function renderReveal() {
   const t = state.reveal.totals;
   $("window-label").textContent = windowText();
   $("hero-value").textContent = fmtEnergy(t.curtailed_twh * 1e6);
-  $("hero-sub").textContent = `${windowText()} · ${state.farms.length} farms tracked`;
+  // planned = what the farms told the grid they'd generate; switched off = the part the grid refused
+  const planned = state.reveal.farms.reduce((s, f) => s + (f.potential_mwh || 0), 0);
+  const cut = t.curtailed_twh * 1e6;
+  $("hero-sub").textContent = `${windowText()} · ${state.farms.length} farms tracked · ` +
+    (planned <= 0 ? "no output planned"
+      : cut === 0 ? `${fmtEnergy(planned)} planned, all of it delivered: the grid had room`
+      : `${fmtPct(cut / planned)} of the ${fmtEnergy(planned)} planned`);
   $("t-payments").textContent = fmtCompact(t.payments_gbp, "£");
   $("t-gas").textContent = fmtCompact(t.replacement_gas_gbp, "£");
   $("t-co2").textContent = `${fmtCompact(t.co2_t)} t`;
@@ -477,12 +487,14 @@ function renderPredict() {
   const pred = sum("pred_mwh"), p10 = sum("p10_mwh"), p90 = sum("p90_mwh");
   const hasRange = scope.some((f) => f.hours.some((h) => h.p90_mwh != null));
   const total = pred.reduce((a, b) => a + b, 0);
-  $("pred-value").textContent = farms.length ? fmtEnergy(total) : "No forecast";
+  $("pred-value").textContent = farms.length ? (total < 0.5 ? "≈ 0 MWh" : fmtEnergy(total)) : "No forecast";
   const issued = tm.issued_at ? new Date(tm.issued_at) : null;
   const stale = issued && Date.now() - issued.getTime() > 36 * 3600 * 1000;
   const sub = clear($("pred-sub"));
   if (hours.length) sub.append(`For ${dayFmt.format(new Date(hours[0]))} · issued ${shortFmt.format(issued)} UTC `);
   if (stale) sub.append(el("span", { class: "tag stale" }, "stale: older than 36 h"));
+  if (farms.length && total < 0.5) sub.append(el("div", {}, "The model expects the grid to have room for this wind. " +
+    "The range shows how much could still be switched off if it's wrong."));
   if (hasRange && hours.length) sub.append(el("div", {},
     `Range ${fmtEnergy(p10.reduce((a, b) => a + b, 0))} – ${fmtEnergy(p90.reduce((a, b) => a + b, 0))}` +
     (sel ? " (10th–90th percentile)" : " (sum of each farm's 10th–90th percentile; approximate)")));
