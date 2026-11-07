@@ -214,3 +214,11 @@ def test_refresh_survives_a_failed_file_replace(tmp_path, monkeypatch):
 def test_band_contains_the_point_forecast():
     lo, hi = tr.order_band(np.array([5.0, 0.0]), np.array([9.0, 2.0]), pred=np.array([12.0, 1.0]))
     assert lo.tolist() == [5.0, 0.0] and hi.tolist() == [12.0, 2.0]
+
+
+def test_interval_stats_by_predicted_size():
+    bt = pd.DataFrame({"curtailed_mwh_pred": [0.0, 0.0, 5.0, 50.0], "curtailed_mwh_actual": [0.0, 30.0, 4.0, 80.0],
+                       "curtailed_mwh_p10": [0.0, 0.0, 2.0, 20.0], "curtailed_mwh_p90": [0.0, 0.0, 8.0, 90.0]})
+    g = tr.interval_stats(bt)["by_predicted_size_mwh"]
+    assert g["<1"] == {"rows": 2, "coverage": 0.5, "coverage_on_waste_hours": 0.0}
+    assert g["1-10"]["coverage"] == 1.0 and g[">10"]["coverage_on_waste_hours"] == 1.0
