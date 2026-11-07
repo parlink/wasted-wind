@@ -173,17 +173,31 @@ def zone_inputs(curt: pd.DataFrame) -> pd.DataFrame:
         "curt_s_mwh": g[("curtailed_mwh_a", "south_scotland")]}, index=idx)
 
 
-def zone_temperature(weather: pd.DataFrame, farms: pd.DataFrame) -> pd.DataFrame:
-    """Hourly 2 m air temperature (°C) per zone: the mean over the zone's farms.
+def zone_temperature(weather: pd.DataFrame, towns: pd.DataFrame) -> pd.DataFrame:
+    """Hourly 2 m air temperature (°C) per zone, population-weighted over the zone's main towns.
 
-    `weather` is the Open-Meteo archive (farm_id, time, temperature_2m). Index hour_start (UTC),
-    one column per zone. For the simulator's heat-pump lever (BRIEF lever 6): real daily weather,
-    so cold spells (often calm) and windy days (often mild) carry their own heating load.
+    `weather`: Open-Meteo archive rows (farm_id = town id, time, temperature_2m); `towns`:
+    reference/towns.csv (town, zone, population). Heat-pump demand follows where people live, so
+    towns are used rather than wind-farm sites (hilltops run colder, offshore sites milder).
+    This is REALISED weather (reanalysis archive), right for historical replays; it is not a
+    forecast. Index hour_start (UTC), one column per zone.
     """
-    zone = farms.drop_duplicates("farm_id").set_index("farm_id").zone
-    w = weather.assign(zone=weather.farm_id.map(zone)).dropna(subset=["zone", "temperature_2m"])
-    t = w.pivot_table(index="time", columns="zone", values="temperature_2m", aggfunc="mean")
-    return t.rename_axis("hour_start").rename_axis(None, axis=1)
+    t = towns.set_index("town")
+    w = weather[weather.farm_id.isin(t.index)].dropna(subset=["temperature_2m"])
+    w = w.assign(zone=w.farm_id.map(t.zone), pop=w.farm_id.map(t.population).astype(float))
+    w = w.assign(wt=w.temperature_2m * w["pop"])
+    g = w.groupby(["time", "zone"])[["wt", "pop"]].sum()
+    out = (g.wt / g["pop"]).unstack("zone")
+    return out.rename_axis("hour_start").rename_axis(None, axis=1)
+
+
+def half_hourly(hourly: pd.Series, periods: pd.Series) -> np.ndarray:
+    """Hourly spot values onto half hours: :00 takes the hour, :30 the mean of the hours either
+    side (null if either is missing)."""
+    hour = periods.dt.floor("h")
+    now = hour.map(hourly).to_numpy(float)
+    nxt = (hour + pd.Timedelta(hours=1)).map(hourly).to_numpy(float)
+    return np.where(periods.dt.minute.to_numpy() == 30, (now + nxt) / 2, now)
 
 
 def assemble(zone: pd.DataFrame, bounds: pd.DataFrame, price: pd.Series, demand: pd.Series,
@@ -196,15 +210,14 @@ def assemble(zone: pd.DataFrame, bounds: pd.DataFrame, price: pd.Series, demand:
     p = p.ffill(limit=CARRY_PERIODS).interpolate(method="time").ffill().bfill()
     out["market_price_gbp_mwh"] = out.period_start.map(p)
     out["gb_demand_mw"] = out.period_start.map(demand)
-    # hourly temperature repeated for both half hours; null where the archive has no value yet
+    # hourly spot temperature interpolated to half hours; null where the archive has no value yet
     # (it lags real time by ~5 days)
     out["temperature_2m_c"] = np.nan
     if temperature is not None and len(temperature):
-        hour = out.period_start.dt.floor("h")
         for z in ("north_scotland", "south_scotland"):
             if z in temperature:
                 m = out.zone == z
-                out.loc[m, "temperature_2m_c"] = hour[m].map(temperature[z]).to_numpy()
+                out.loc[m, "temperature_2m_c"] = half_hourly(temperature[z], out.loc[m, "period_start"])
     if n_price_gaps:
         log.info("market price: filled %d missing half hours", n_price_gaps)
     return out.sort_values(["period_start", "zone"]).reset_index(drop=True)[COLUMNS]
@@ -243,13 +256,15 @@ def main():
     bounds = boundary_series(parse_neso(pd.read_csv(RAW / "neso" / "day_ahead_constraints.csv",
                                                     encoding="utf-8-sig")))
     weekly = parse_weekly(pd.read_csv(RAW / "neso" / "congestion_weekly.csv"))
-    farms = pd.read_csv(ROOT / "reference" / "farms.csv")
-    files = sorted((RAW / "openmeteo" / "archive").glob("*.parquet"))
+    towns = pd.read_csv(ROOT / "reference" / "towns.csv")
+    files = sorted((RAW / "openmeteo" / "archive_towns").glob("*.parquet"))
+    if not files:
+        raise SystemExit("no town weather: run `python -m pipeline.fetch --sources towns` first")
     weather = pd.concat([pd.read_parquet(f, columns=["farm_id", "time", "temperature_2m"]) for f in files])
     weather = weather.drop_duplicates(["farm_id", "time"], keep="last")
     out = assemble(zone, bounds, market_price(_load_elexon("MID")),
                    demand_outturn(_load_elexon("DEMAND_OUTTURN")), weekly,
-                   zone_temperature(weather, farms))
+                   zone_temperature(weather, towns))
     check_output(out)
     out.to_parquet(OUT, index=False)
     log.info("wrote %s: %d rows, %s to %s", OUT, len(out), out.period_start.min(), out.period_start.max())
