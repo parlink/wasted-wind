@@ -26,6 +26,7 @@ from scipy.optimize import linprog
 
 H = 0.5
 CAPTURE_TIEBREAK = 1e-6   # tiny value per MWh captured, so ties prefer catching waste
+MIN_ACTION_MWH = 0.05     # planned charges below this are shown as "hold" (execution still reacts live)
 
 
 def _solve(p: float, e: float, eff: float, w, price, head, soc0: float):
@@ -59,15 +60,19 @@ def _clean(battery, waste, price, head):
 def plan_day(battery: dict, curtailment_mwh: np.ndarray, price_gbp_mwh: np.ndarray,
              headroom_mw: np.ndarray, soc_start_mwh: float) -> dict:
     p, e, eff, w, price, head = _clean(battery, curtailment_mwh, price_gbp_mwh, headroom_mw)
+    if len(w) == 0:          # nothing left to plan (e.g. a live re-plan after 23:30)
+        return {"action": np.array([], dtype=str), "power_mw": np.zeros(0), "soc_mwh": np.zeros(0),
+                "reason": np.array([], dtype=str)}
     boundary = "B6" if battery.get("zone") == "south_scotland" else "B4"
     c, d, s = _solve(p, e, eff, w, price, head, soc_start_mwh)
     n = len(w)
+    c = np.where(c * H < MIN_ACTION_MWH, 0.0, c)      # don't label tie-break crumbs as "charge"
     action = np.where(d > 0, "discharge", np.where(c > 0, "charge", "hold")).astype(object)
     power = np.where(d > 0, d, c)
     reason = np.full(n, "", dtype=object)
     for i in range(n):
         if action[i] == "charge":
-            reason[i] = f"optimiser: storing {c[i] * H:.0f} MWh of forecast waste behind {boundary}"
+            reason[i] = f"optimiser: storing {c[i] * H:.1f} MWh of forecast waste behind {boundary}"
         elif action[i] == "discharge":
             reason[i] = f"optimiser: selling at £{price[i]:.0f}/MWh, {head[i]:.0f} MW room on {boundary}"
 
