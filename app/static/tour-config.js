@@ -93,6 +93,7 @@
     ensureWind: (on) => { if (!!state.wind.on !== on) $("wind-toggle").click(); },
     windPlay: () => { if (!state.wind.timer) $("wind-play").click(); },
     apReplay: () => { if (!state.ap.timer) toggleApReplay(); },
+    openMore: () => { const d = document.getElementById("ap-more"); if (d) d.open = true; },   // Batteries: "More options"
   };
 
   const D = { storm: "2026-10-27", winter: "2025-02-20", battery: "2026-09-02", monthA: "2026-10-01", monthB: "2026-10-31", weekA: "2026-10-26", weekB: "2026-11-01" };
@@ -121,14 +122,14 @@
       { id: "winter", do: [["tab", "predict"], ["set", "tm.date", D.winter]], show: ["tm.tiles", "tm.chart", "tm.note"],
         label: "20 Feb 2025: an earlier model with less history forecast under half of this storm", hold: 12000 },
       { id: "headline", do: [["tab", "autopilot"]], show: ["ap.headline", "ap.headline.sub"],
-        label: "Share of the best possible battery earnings with our forecast and without one, on three months held out from tuning", hold: 11000 },
+        label: "How much more a battery earned with our forecast, on three months kept aside", hold: 11000 },
       { id: "replay", do: [["tab", "autopilot"], ["set", "ap.battery", "moray_east_bess"], ["set", "ap.date", D.battery], ["wait", 1500], ["call", "apReplay"]], show: ["ap.strip", "ap.soc"],
         label: "One battery on 2 Sep 2026: charge, hold or discharge each half hour", hold: 18000 },
       { id: "log", do: [["tab", "autopilot"], ["set", "ap.battery", "moray_east_bess"], ["set", "ap.date", D.battery]], show: "ap.log",
         label: "Every decision is logged with its reason", hold: 7000 },
       { id: "full", do: [["tab", "autopilot"], ["set", "ap.battery", "moray_east_bess"], ["set", "ap.date", D.storm]], show: ["ap.strip", "ap.soc"],
         label: "27 Oct 2026, the biggest storm: the battery was already full all day, so none of that waste could be stored", hold: 10000 },
-      { id: "planner", do: [["tab", "autopilot"], ["set", "ap.planner", "lp_band"]], show: ["ap.planner", "ap.headline"],
+      { id: "planner", do: [["tab", "autopilot"], ["call", "openMore"], ["set", "ap.planner", "lp_band"]], show: ["ap.planner", "ap.headline"],
         label: "Planning for the high end of the forecast's range instead of its middle", hold: 9000 },
       { id: "cable", do: [["tab", "simulate"], ["set", "sim.link.zone", "north_scotland"], ["set", "sim.link.gw", "2"]], show: "sim.link", dim: 0.1,
         label: "What if a 2 GW undersea cable took power from the north straight to England?", hold: 9000 },
