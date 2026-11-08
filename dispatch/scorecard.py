@@ -125,16 +125,33 @@ def execute(battery: dict, plan: dict, actual_waste_mwh, price, headroom_mw, soc
 
 # ---------- inputs ----------
 
-def load_inputs():
+def headline_window() -> tuple[pd.Timestamp, pd.Timestamp]:
+    """The scorecard's headline period: the tuning plus hold-out months (unchanged by #50)."""
+    months = sorted(TUNE_MONTHS + HOLDOUT_MONTHS)
+    start = pd.Timestamp(f"{months[0]}-01T00:00Z")
+    return start, pd.Timestamp(f"{months[-1]}-01T00:00Z") + pd.offsets.MonthBegin(1)
+
+
+def replay_periods(fc_hours: pd.Series, start: pd.Timestamp, end: pd.Timestamp) -> pd.DatetimeIndex:
+    """Half hours to replay: the forecast's whole days within [start, end)."""
+    h = fc_hours[(fc_hours >= start) & (fc_hours < end)]
+    return pd.date_range(h.min().normalize(), (h.max() + pd.Timedelta(hours=1)).normalize(),
+                         freq="30min", inclusive="left")
+
+
+def load_inputs(start: pd.Timestamp | None = None, end: pd.Timestamp | None = None):
+    """Inputs for replaying [start, end) (default: the headline window)."""
+    if start is None:
+        start, end = headline_window()
     curt = pd.read_parquet(PROCESSED / "curtailment.parquet",
                            columns=["farm_id", "period_start", "curtailed_mwh_a", "bid_price_gbp_mwh"])
     res = pd.read_parquet(PROCESSED / "residual.parquet")
     fc = pd.read_parquet(PROCESSED / "forecast.parquet")
     fc = fc[(fc.split == "backtest") & (fc.issued_at == fc.hour_start.dt.normalize() - pd.Timedelta(hours=14))]
     fc = fc.sort_values("issued_at").drop_duplicates(["farm_id", "hour_start"], keep="last")
-    start = fc.hour_start.min().normalize().replace(day=1)
-    end = (fc.hour_start.max() + pd.Timedelta(hours=1)).normalize()
-    periods = pd.date_range(start, end, freq="30min", inclusive="left")
+    periods = replay_periods(fc.hour_start, start, end)
+    start, end = periods[0], periods[-1] + pd.Timedelta(minutes=30)
+    fc = fc[(fc.hour_start >= start - pd.Timedelta(days=PRE_DAYS)) & (fc.hour_start < end)]
     hist = pd.date_range(start - pd.Timedelta(days=PRE_DAYS), end, freq="30min", inclusive="left")
 
     r = {z: g.set_index("period_start") for z, g in res.groupby("zone")}
@@ -303,6 +320,33 @@ def price_forecast_effect(bats, hist, price, head, farm, hold: dict, tot: pd.Dat
     return out
 
 
+def extended_replay(bats: list[dict], band_weight: float):
+    """#50: the same batteries and settings (tuned on TUNE_MONTHS) replayed on the backtest months
+    before the headline window, for the time machine. Returns (schedule rows, summary) or (None, None)."""
+    fc = pd.read_parquet(PROCESSED / "forecast.parquet", columns=["hour_start", "split"])
+    first = fc.loc[fc.split == "backtest", "hour_start"].min()
+    start, end = headline_window()
+    if pd.isna(first) or first >= start:
+        return None, None
+    periods, hist, price, head, farm = load_inputs(first.normalize(), start)
+    frames = [replay(b, s, hist, price, head[b["zone"]], farm[b["battery_id"]]) for b in bats for s in STRATEGIES]
+    frames += [replay(b, s, hist, price, head[b["zone"]], farm[b["battery_id"]], "lp")
+               for b in bats for s in ("reactive", "forecast")]
+    frames += [replay(dict(b, band_weight=band_weight), "forecast", hist, price, head[b["zone"]],
+                      farm[b["battery_id"]], band.NAME) for b in bats]
+    frames += [lp_rows(b, hist, price, head[b["zone"]], farm[b["battery_id"]]) for b in bats]
+    sched = pd.concat(frames, ignore_index=True)
+    rev = (sched.strategy + "/" + sched.dispatcher).to_frame("key").assign(r=sched.revenue_gbp).groupby("key").r.sum()
+    summary = {"period": {"start": f"{periods[0]:%Y-%m-%dT%H:%M:%SZ}",
+                          "end": f"{periods[-1] + pd.Timedelta(minutes=30):%Y-%m-%dT%H:%M:%SZ}"},
+               "capture_ratio": capture_ratios(rev.to_dict()),
+               "revenue_gbp": {k: round(float(v), 0) for k, v in rev.items()},
+               "note": "same batteries and settings, tuned on " + "/".join(TUNE_MONTHS) + " (after this period); "
+                       "for the time machine; the forecast is walk-forward (trained only on data before each month)"}
+    log.info("extended replay %s: capture %s", summary["period"], summary["capture_ratio"])
+    return sched, summary
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     periods, hist, price, head, farm = load_inputs()
@@ -317,9 +361,11 @@ def main():
                       farm[b["battery_id"]], band.NAME) for b in bats]
     frames += [lp_rows(b, hist, price, head[b["zone"]], farm[b["battery_id"]]) for b in bats]
     sched = pd.concat(frames, ignore_index=True)
+    ext_sched, ext_summary = extended_replay(bats, band_tuning["chosen"])
     path = PROCESSED / "schedules.parquet"
     backtest_end = periods[-1] + pd.Timedelta(minutes=30)
-    full = keep_live_rows(pd.read_parquet(path), sched, backtest_end) if path.exists() else sched
+    all_sched = sched if ext_sched is None else pd.concat([ext_sched, sched], ignore_index=True)
+    full = keep_live_rows(pd.read_parquet(path), all_sched, backtest_end) if path.exists() else all_sched
     full.to_parquet(path, index=False)
 
     sched["key"] = sched.strategy + "/" + sched.dispatcher
@@ -355,6 +401,7 @@ def main():
            "holdout": {"months": list(HOLDOUT_MONTHS),
                        "capture_ratio": capture_ratios(hold),
                        "revenue_gbp": {k: round(v, 0) for k, v in hold.items()}},
+           **({"extended_backtest": ext_summary} if ext_summary else {}),
            "plan_waste_fraction": tuning,
            "band_weight": band_tuning}
     (PROCESSED / "scorecard.json").write_text(json.dumps(out, indent=2))

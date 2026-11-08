@@ -2,7 +2,9 @@
 
     python -m pipeline.train   -> data/processed/forecast.parquet, data/processed/model_metrics.json
 
-Walk-forward by month over the last 6 complete months: for each test month, everything is fitted
+Walk-forward by month from BACKTEST_START (#50: the time machine) to the last complete month; the
+headline metrics ("models") score only the last 6 months, so they're unchanged, and the full range is
+in "extended_backtest". For each test month, everything is fitted
 (model, climatology, wind-rule threshold) on hours before the day BEFORE that month: the 1st's
 forecast is issued at 10:00 on the last day of the previous month, which isn't complete yet.
 Never shuffled. LightGBM settings and the Tweedie power were fixed up front (common defaults),
@@ -39,6 +41,7 @@ from pipeline import features as ft
 log = logging.getLogger("train")
 
 N_TEST_MONTHS = 6
+BACKTEST_START = "2024-07-01"      # archived day-ahead weather starts 2024-03-07: ~4 months to train on
 EVENT_MWH = 10.0
 TWEEDIE_POWER = 1.3
 LGB_PARAMS = dict(objective="tweedie", tweedie_variance_power=TWEEDIE_POWER, n_estimators=500,
@@ -47,7 +50,7 @@ LGB_PARAMS = dict(objective="tweedie", tweedie_variance_power=TWEEDIE_POWER, n_e
 FC_COLS = ["farm_id", "zone", "hour_start", "issued_at", "split", "curtailed_mwh_pred",
            "curtailed_mwh_p10", "curtailed_mwh_p90", "curtailed_mwh_actual",
            "baseline_persistence_mwh", "baseline_climatology_mwh", "baseline_wind_rule_mwh",
-           "model_version"]
+           "model_version", "training_days"]
 LIMIT_FEATURES = ["b4_limit_mw", "b6_limit_mw", "b4_excess_potential_mw", "b6_excess_potential_mw"]
 NO_LIMIT_FEATURES = [f for f in ft.FEATURES if f not in LIMIT_FEATURES]
 WITH_OB_FEATURES = ft.FEATURES + ft.OB_FEATURES     # #51 ablation: the model plus order-book signals
@@ -67,6 +70,22 @@ def test_months(hour_start: pd.Series, n: int = N_TEST_MONTHS) -> list[pd.Timest
     end = last.normalize().replace(day=1) if last != last.normalize().replace(day=1) else last
     starts = pd.date_range(end=end - pd.Timedelta(days=1), periods=n, freq="MS", tz="UTC")
     return [s.normalize() for s in starts]
+
+
+def backtest_months(hour_start: pd.Series, start: str = BACKTEST_START) -> list[pd.Timestamp]:
+    """Every complete month from `start` to the end of the data; the last N_TEST_MONTHS are the headline."""
+    last = test_months(hour_start)[-1]
+    return list(pd.date_range(pd.Timestamp(start, tz="UTC"), last, freq="MS"))
+
+
+def training_days(train_hours: pd.Series) -> int:
+    """Days of history a fold was trained on (shown by the time machine: "trained on N days")."""
+    return int(pd.DatetimeIndex(train_hours).normalize().nunique())
+
+
+def headline_rows(bt: pd.DataFrame, months: list[pd.Timestamp]) -> pd.DataFrame:
+    """Backtest rows in the headline months only."""
+    return bt[bt.hour_start >= months[0]]
 
 
 def score(actual, pred, hour_start, threshold: float = EVENT_MWH) -> dict:
@@ -181,13 +200,21 @@ def apply_baselines(rows: pd.DataFrame, b: dict) -> pd.DataFrame:
     return rows
 
 
-def run_fold(panel: pd.DataFrame, month: pd.Timestamp):
+def run_fold(panel: pd.DataFrame, month: pd.Timestamp, headline: bool = True):
+    """headline=False (months before the headline six): the forecast and baselines only, no
+    ablations or SHAP, which are reported for the headline months."""
     nxt = month + pd.offsets.MonthBegin(1)
     train = panel[train_mask(panel.hour_start, month)]
     test = panel[(panel.hour_start >= month) & (panel.hour_start < nxt)].copy()
     models = fit_all(train)
     model = models["curtailed_mwh_pred"]
     test = predict_all(models, test)
+    test["training_days"] = training_days(train.hour_start)
+    if not headline:
+        test = apply_baselines(test, fit_baselines(train))
+        log.info("%s: train %d rows (%d days), test %d rows", month.strftime("%Y-%m"), len(train),
+                 test.training_days.iloc[0] if len(test) else 0, len(test))
+        return test, model
     ablation = _fit(train, NO_LIMIT_FEATURES)
     test["pred_no_limits"] = np.clip(ablation.predict(test[NO_LIMIT_FEATURES]), 0, None)
     with_ob = _fit(train, WITH_OB_FEATURES)           # #51: what the order-book signals add
@@ -266,6 +293,7 @@ def live_rows(models: dict, baselines: dict, curt: pd.DataFrame, now: pd.Timesta
     rows = predict_all(models, rows)
     rows = apply_baselines(rows, baselines)
     rows["curtailed_mwh_actual"] = np.nan
+    rows["training_days"] = training_days(curt.period_start)     # live models are fitted on everything
     return rows
 
 
@@ -323,16 +351,19 @@ def main():
     log.info("panel: %d farm-hours, %s to %s, %d farms", len(panel), panel.hour_start.min(),
              panel.hour_start.max(), panel.farm_id.nunique())
     version = f"lgbm-{datetime.now(timezone.utc):%Y-%m-%d}a"
-    months = test_months(panel.hour_start)
+    months = test_months(panel.hour_start)                 # headline: the last 6 months
+    all_months = backtest_months(panel.hour_start)
     folds, shaps = [], []
-    for m in months:
-        out, _ = run_fold(panel, m)
-        shaps.append(out.attrs.pop("shap"))
+    for m in all_months:
+        out, _ = run_fold(panel, m, headline=m in months)
+        if "shap" in out.attrs:
+            shaps.append(out.attrs.pop("shap"))
         folds.append(out)
-    bt = pd.concat(folds, ignore_index=True)
-    bt["split"], bt["model_version"] = "backtest", version
-    bt["curtailed_mwh_actual"] = bt.curtailed_mwh
-    fc = bt[FC_COLS]
+    full_bt = pd.concat(folds, ignore_index=True)
+    full_bt["split"], full_bt["model_version"] = "backtest", version
+    full_bt["curtailed_mwh_actual"] = full_bt.curtailed_mwh
+    fc = full_bt[FC_COLS]
+    bt = headline_rows(full_bt, months)                     # every headline number below
 
     # Live: tomorrow, from a model fitted on everything. Network problems keep the backtest.
     try:
@@ -365,6 +396,16 @@ def main():
                k: round(v, 3) for k, v in score(bt.curtailed_mwh_actual, bt.pred_no_limits,
                                                 bt.hour_start).items()}},
            "interval": interval_stats(bt),
+           "extended_backtest": {
+               "validation": f"walk-forward by month, {all_months[0]:%Y-%m} to {all_months[-1]:%Y-%m}; the "
+                             "headline above is the last 6 months of it",
+               "models": {name: {k: round(v, 3) for k, v in score(full_bt.curtailed_mwh_actual, full_bt[col],
+                                                                  full_bt.hour_start).items()}
+                          for name, col in MODEL_NAMES.items()},
+               "by_month_mae_mwh": {m: round(float(np.mean(np.abs(g.curtailed_mwh_actual - g.curtailed_mwh_pred))), 3)
+                                    for m, g in full_bt.groupby(full_bt.hour_start.dt.strftime("%Y-%m"))},
+               "training_days_by_month": {m: int(g.training_days.iloc[0])
+                                          for m, g in full_bt.groupby(full_bt.hour_start.dt.strftime("%Y-%m"))}},
            "shap_top_signals": shap_top(shaps),
            "notes": ["SHAP: mean |SHAP| on each fold's held-out month, averaged over folds",
                      "lightgbm is biased low (~18% on the backtest); the p10-p90 band is fitted separately",
