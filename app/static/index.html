@@ -506,58 +506,39 @@
 
     <section class="about-page" data-page="1">
       <p class="about-eyebrow">The problem</p>
-      <h2 id="about-title">On <span class="storm-date">27 October 2026</span>, Scotland switched off <span id="storm-share">most</span> of its wind power.</h2>
-      <p class="about-lead">Storm Boelo swept in on 24–25 October, and the wind kept coming. On the 27th, Scotland's farms could have made <b id="storm-potential">a lot</b> of power. But the power lines south to England were
-        <b>full</b>, so the grid <b>paid the farms to stop</b> and burned gas in England instead. <span id="storm-farms"></span></p>
-      <div class="about-tiles">
-        <div class="tile"><div class="label">Wind power thrown away, in one day</div><div class="value" id="storm-twh">–</div></div>
-        <div class="tile"><div class="label">Paid to farms to switch off</div><div class="value" id="storm-paid">–</div></div>
-        <div class="tile"><div class="label">Gas burned in England instead</div><div class="value" id="storm-gas">–</div></div>
-        <div class="tile"><div class="label">CO₂ from that gas</div><div class="value" id="storm-co2">–</div></div>
+      <h2 id="about-title">On 27 October, the 33 wind farms we track switched off <span id="storm-share">most</span> of what they could have made.</h2>
+      <p class="about-lead">The power lines south were full, so the grid paid wind farms to stop, and burned gas instead.</p>
+      <div class="about-big">
+        <div><b id="storm-twh">–</b><span>wind wasted in one day</span></div>
+        <div><b id="storm-paid">–</b><span>paid to switch off</span></div>
+        <div><b id="storm-gas">–</b><span>of gas burned instead</span></div>
       </div>
-      <p class="about-how"><b>How we got these:</b> wasted = what each farm planned to make minus what the grid let it make (Elexon) ·
-        paid = each wasted MWh × the price that farm itself asked to switch off · gas = each MWh × about £73 to make it with gas
-        instead, carbon included · CO₂ = 0.37 t per MWh of gas power.</p>
-      <p class="about-lead">It happens all the time: since January 2024, <b id="about-twh">about 25 TWh</b> wasted,
-        <b id="about-paid">hundreds of millions</b> paid to switch off, and <b id="about-gas">more</b> spent on gas.</p>
+      <p class="about-since">Since 2024: <b id="about-twh">–</b> wasted · <b id="about-paid">–</b> paid · <b id="about-gas">–</b> of gas</p>
+      <p class="about-how">Wasted = what farms planned minus what the grid allowed (Elexon). Gas ≈ £73 per MWh, carbon included.</p>
     </section>
 
     <section class="about-page" data-page="2" hidden>
       <p class="about-eyebrow">Our solution</p>
-      <h2>Know the day before, then store the wind instead of wasting it.</h2>
-      <p class="about-lead">If you know <i>today</i> how much wind will be wasted <i>tomorrow</i>, a battery can be empty and
-        ready to catch it, then sell it later when the lines have room.</p>
-      <div class="about-trio">
-        <div class="tile"><div class="label">1 · Measure</div><p>How much wind each of 33 farms loses, every half hour since January 2024.</p></div>
-        <div class="tile"><div class="label">2 · Predict</div><p>The waste up to 6 days ahead: 2.3× more accurate than a naive guess, 82% of waste events seen coming.</p></div>
-        <div class="tile"><div class="label">3 · Act</div><p>Batteries that store it and sell it automatically, earning about 27% more than without a forecast.</p></div>
+      <h2>See it coming. Store it instead.</h2>
+      <div class="about-big">
+        <div><b>33</b><span>farms measured, every half hour</span></div>
+        <div><b>2.3×</b><span>smaller error than “same as 2 days ago”</span></div>
+        <div><b>+27%</b><span>battery earnings with our forecast</span></div>
       </div>
-      <p class="about-how"><b>How we got these:</b> 2.3× = our average miss (19.1 MWh per farm per hour) against 43.3 for “same as
-        2 days ago” · 82% = of the hours with real waste, how many we flagged the day before · 27% = what 4 batteries earned with our
-        forecast vs without it, on Aug–Oct 2026.</p>
       <p class="about-proof" id="about-proof"></p>
+      <p class="about-how">Forecast tested on months it never saw; against the best simple rule its error is about a fifth lower. Battery gain measured on Aug–Oct 2026.</p>
     </section>
 
     <section class="about-page" data-page="3" hidden>
-      <p class="about-eyebrow">What this site does</p>
+      <p class="about-eyebrow">What's inside</p>
       <h2>Four tabs, one story</h2>
       <ol class="about-steps">
-        <li data-go="reveal"><b>1 History</b> · any day, week, month or year since 2024: the wind wasted, the £ paid to
-          switch off, the gas and CO₂ instead, which power line was full, and every farm's half hours, checked two ways</li>
-        <li data-go="predict"><b>2 Forecast</b> · the next 6 days for every farm with a likely range, how accurate it is and
-          what it relies on, and a look back at any day since July 2024 exactly as it was forecast</li>
-        <li data-go="autopilot"><b>3 Batteries</b> · four real-sized batteries run by an autopilot: every half hour it stores,
-          waits or sells, with the price and the reason, replayed or live, with and without our forecast</li>
-        <li data-go="simulate"><b>4 Simulate</b> · 15 controls: bigger power lines, an undersea cable, batteries you place on the
-          map, heat pumps, electric cars, data centres, gas and carbon prices, windier weather</li>
+        <li data-go="reveal"><b>1 History</b> what was wasted, where, and the cost</li>
+        <li data-go="predict"><b>2 Forecast</b> the next 6 days, farm by farm</li>
+        <li data-go="autopilot"><b>3 Batteries</b> an autopilot that stores and sells it</li>
+        <li data-go="simulate"><b>4 Simulate</b> build cables and batteries, see the change</li>
       </ol>
-      <h3>Where the data comes from (all public)</h3>
-      <ul class="about-data">
-        <li><b>Elexon BMRS</b> · the grid's order book: physical notifications, bid-offer acceptances, bid prices and B1610 metered output for 50 wind units, half hour by half hour</li>
-        <li><b>NESO</b> · day-ahead constraint limits and flows on the B4 and B6 transmission boundaries</li>
-        <li><b>Open-Meteo</b> · archived numerical weather prediction runs at 100 m hub height, captured 1–7 days before each hour: zero hindsight</li>
-      </ul>
-      <p class="about-how">How each number is made, and its limits: the <a href="#" data-go="method">Method</a> tab.</p>
+      <p class="about-data"><b>Data</b> Elexon market records · NESO grid limits · Open-Meteo forecasts</p>
     </section>
 
     <div class="about-nav">
