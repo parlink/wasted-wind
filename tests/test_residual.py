@@ -147,3 +147,51 @@ def test_neso_duplicate_at_an_ordinary_time_keeps_one_row():
                         "Limit_MW": [3, 3], "Flow_MW": [0, 0]})
     out = rs.parse_neso(raw)
     assert out.period_start.tolist() == [pd.Timestamp("2025-07-01T11:00Z")]
+
+
+# ---------- temperature for the heat-pump lever (#43 review) ----------
+
+def test_zone_temperature_is_population_weighted_over_towns():
+    # Quant review #45: where people live (towns), not hilltop/offshore farm sites.
+    towns = pd.DataFrame({"town": ["big", "small", "s"], "zone": ["north_scotland", "north_scotland", "south_scotland"],
+                          "population": [300, 100, 50]})
+    h = pd.date_range("2025-01-01T00:00Z", periods=2, freq="h")
+    w = pd.DataFrame({"farm_id": ["big", "big", "small", "small", "s", "s"], "time": list(h) * 3,
+                      "temperature_2m": [2.0, 4.0, 6.0, 8.0, 8.0, 9.0]})
+    t = rs.zone_temperature(w, towns)
+    assert t.loc[h[0], "north_scotland"] == pytest.approx((300 * 2 + 100 * 6) / 400)
+    assert t.loc[h[1], "south_scotland"] == 9.0
+
+
+def test_reference_towns_cover_both_zones():
+    towns = pd.read_csv(ROOT / "reference" / "towns.csv")
+    assert set(towns.zone) == {"north_scotland", "south_scotland"} and (towns.population > 0).all()
+
+
+def test_assemble_repeats_the_hourly_temperature_for_both_half_hours_and_allows_gaps():
+    idx = pd.date_range("2025-03-01T00:00Z", periods=4, freq="30min", name="period_start")
+    zone = pd.DataFrame({"wind_n_mwh": 1000.0, "wind_s_mwh": 400.0, "curt_n_mwh": 0.0, "curt_s_mwh": 0.0}, index=idx)
+    bounds = pd.DataFrame({"b4_limit_mw": 2400.0, "b4_flow_mw": 2000.0, "b6_limit_mw": 4400.0,
+                           "b6_flow_mw": 3000.0}, index=idx)
+    temp = pd.DataFrame({"north_scotland": [5.0], "south_scotland": [7.0]},
+                        index=pd.DatetimeIndex([pd.Timestamp("2025-03-01T00:00Z")], name="hour_start"))
+    out = rs.assemble(zone, bounds, pd.Series(50.0, index=idx), pd.Series(dtype=float), weekly=None,
+                      temperature=temp)
+    rs.check_output(out)
+    north = out[out.zone == "north_scotland"].set_index("period_start").temperature_2m_c
+    assert north.iloc[0] == 5.0 and north.iloc[2:].isna().all()     # 01:00 missing -> null
+    assert np.isnan(north.iloc[1])        # :30 interpolates between hours; no 01:00 value, so null
+
+
+
+def test_half_hours_interpolate_between_hourly_spot_values():
+    idx = pd.date_range("2025-03-01T00:00Z", periods=4, freq="30min", name="period_start")
+    zone = pd.DataFrame({"wind_n_mwh": 1000.0, "wind_s_mwh": 400.0, "curt_n_mwh": 0.0, "curt_s_mwh": 0.0}, index=idx)
+    bounds = pd.DataFrame({"b4_limit_mw": 2400.0, "b4_flow_mw": 2000.0, "b6_limit_mw": 4400.0,
+                           "b6_flow_mw": 3000.0}, index=idx)
+    temp = pd.DataFrame({"north_scotland": [4.0, 6.0], "south_scotland": [7.0, 7.0]},
+                        index=pd.DatetimeIndex(["2025-03-01T00:00Z", "2025-03-01T01:00Z"], name="hour_start"))
+    out = rs.assemble(zone, bounds, pd.Series(50.0, index=idx), pd.Series(dtype=float), weekly=None,
+                      temperature=temp)
+    north = out[out.zone == "north_scotland"].set_index("period_start").temperature_2m_c
+    assert north.iloc[:3].tolist() == [4.0, 5.0, 6.0]

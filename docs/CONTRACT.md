@@ -76,6 +76,7 @@ Primary key: (`zone`, `period_start`).
 | `wind_delivered_mwh` | float | Σ `accepted_mwh` of farms in this zone that period. |
 | `market_price_gbp_mwh` | float | GB market index price that period. GB-wide, so the **same value in both zone rows**. Used for battery revenue. |
 | `gb_demand_mw` | float, nullable | GB demand outturn. Same value in both zone rows. |
+| `temperature_2m_c` | float, nullable | 2 m air temperature, °C, **population-weighted over the zone's main towns** (`reference/towns.csv`), from the Open-Meteo archive: **realised** weather, for historical replays, not a forecast. Hourly spot values interpolated to half hours (:30 = mean of the hours either side). Null where the archive has no value yet (it lags ~5 days). For the simulator's heat-pump lever (BRIEF lever 6). |
 
 ## 4. `data/processed/forecast.parquet` (A writes, Part 2)
 
@@ -141,6 +142,15 @@ Primary key: (`battery_id`, `strategy`, `dispatcher`, `period_start`, `plan_issu
 | `captured_curtailment_mwh` | float | Energy taken in that would otherwise have been wasted (uses actual curtailment, not forecast). |
 | `revenue_gbp` | float | Discharge MWh × `market_price_gbp_mwh` minus any grid charging cost. |
 | `reason` | str | One line, e.g. `charging: 180 MWh waste forecast behind B4`. |
+
+### `data/processed/live_executed.parquet` (A writes, `dispatch/live.py`)
+
+What the live batteries actually did, one row per `battery_id` per elapsed `period_start` (primary key
+(`battery_id`, `period_start`); a later run overwrites the same half hour). Same columns as `schedules.parquet`,
+`strategy` = `forecast`, `dispatcher` = `lp`, `plan_issued_at` = the plan that was executed (**nullable**: null for a half hour no plan covered, which then just reacted to live waste). `action`, `power_mw`,
+`soc_mwh`, `captured_curtailment_mwh` and `revenue_gbp` are **executed** values (planned rows in
+`schedules.parquet` keep 0 there). For the Autopilot timeline: executed rows for past half hours, the newest plan
+for future ones. Live plans cover a rolling 24 h from the next half hour.
 
 ### `data/processed/scorecard.json` (A writes, Part 3)
 
@@ -220,7 +230,8 @@ All fields optional; omitted = historical setting. `{}` returns the baseline.
   "b4":  {"mode": "historical" | "fixed" | "offset", "mw": 0},
   "b6":  {"mode": "historical" | "fixed" | "offset", "mw": 0},
   "batteries": [{"battery_id": "user_1", "lat": 57.5, "lon": -4.2, "zone": "north_scotland",
-                 "power_mw": 100, "energy_mwh": 200, "efficiency": 0.88, "dispatcher": "rule" | "lp"}],
+                 "power_mw": 100, "energy_mwh": 200, "efficiency": 0.88, "dispatcher": "rule" | "lp",
+                 "site": "grid" | "farm", "radius_km": 20}],
   "weather": {"wind_scale": 1.0, "replay_start": null, "replay_end": null},
   "window": {"start": "2025-01-01", "end": "2026-01-01"},
   "forecast_quality": "none" | "ours" | "perfect",
@@ -233,6 +244,11 @@ All fields optional; omitted = historical setting. `{}` returns the baseline.
   "carbon_intensity_t_mwh": 0.37
 }
 ```
+
+Battery `site` (default `"grid"`): a grid battery can store waste anywhere in its zone (north of B4: B4 and B6
+waste; between B4 and B6: B6 waste). A `"farm"` battery shares a connection with every farm within `radius_km`
+(default 20) in its own zone, else the nearest farm in that zone, and can store only those farms' would-be waste;
+`farm_ids` in the response names them (empty for a grid battery).
 
 Levers 1, 2, 4, 8, 12, 13 (first block) are Core; 3, 6, 9, 10, 11 (second block) are Full; levers 5
 and 7 (electrolysers, fleet editing) are Stretch and will be added here when built.
@@ -247,7 +263,8 @@ and 7 (electrolysers, fleet editing) are Stretch and will be added here when bui
                "payments_gbp": 2.4e8, "replacement_gas_gbp": 7.0e8, "co2_t": 2.6e6, "homes_equiv": 2.4e6},
   "baseline": {"...same keys...": 0},
   "delta":    {"...same keys, scenario minus baseline...": 0},
-  "batteries": [{"battery_id", "captured_curtailment_mwh", "revenue_gbp", "cycles"}],
+  "batteries": [{"battery_id", "captured_curtailment_mwh", "revenue_gbp", "cycles", "forecast_fallback_periods",
+                 "site", "farm_ids"}],
   "farms": [{"farm_id", "curtailed_mwh", "baseline_curtailed_mwh"}],
   "meta": {...}
 }
