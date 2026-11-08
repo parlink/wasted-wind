@@ -77,10 +77,14 @@ Every figure's method and limitations are in the app's **Method** tab and in [do
 ## Run it
 
 ```bash
+git clone https://github.com/parlink/wasted-wind.git
+cd wasted-wind
 pip install -r requirements.txt
-make fetch-data          # latest processed data and saved models
+make fetch-data          # latest processed data and saved models (needs the GitHub CLI, logged in)
 make serve               # http://localhost:8000
 ```
+
+**No GitHub CLI?** Download every file from the [latest release](https://github.com/parlink/wasted-wind/releases/latest) into `data/processed/`, unzip `models.zip` there, then run `make serve` (or `python -m uvicorn app.server:app --port 8000`). Without any data, the app still runs on small built-in sample data and says so in a yellow banner.
 
 Without `gh` on your PATH (Windows): `make fetch-data GH="/c/Program Files/GitHub CLI/gh.exe"`. Without `make`, run the commands in the [Makefile](Makefile) directly. Use Chrome: the History month and week pickers use its native calendars.
 
