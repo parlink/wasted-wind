@@ -7,6 +7,7 @@
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="tour.css">
 </head>
 <body>
 
@@ -37,7 +38,24 @@
 <aside id="panel" class="panel">
   <header class="panel-head">
     <h1>Wasted Wind</h1>
-    <span id="source-tag" class="tag"></span>
+    <div class="head-right">
+      <span id="source-tag" class="tag"></span>
+      <div class="tour-launch">
+        <button type="button" id="tour-btn" class="btn-secondary" aria-haspopup="true" aria-expanded="false">▶ Tour</button>
+        <div id="tour-menu" class="tour-menu" hidden>
+          <div class="tour-menu-row">
+            <button type="button" class="btn-secondary" data-tour-start="1">Tour 1</button>
+            <button type="button" class="btn-secondary" data-tour-start="2">Tour 2</button>
+          </div>
+          <div class="tour-menu-label">Mode</div>
+          <div class="tour-menu-row">
+            <button type="button" class="btn-secondary" data-tour-mode="presenter" aria-pressed="true">Presenter</button>
+            <button type="button" class="btn-secondary" data-tour-mode="auto" aria-pressed="false">Auto</button>
+          </div>
+          <p id="tour-note" class="note" hidden>The tours need the released data; this is fake demo data.</p>
+        </div>
+      </div>
+    </div>
   </header>
   <nav class="tabs" role="tablist">
     <button role="tab" data-tab="reveal" aria-selected="true">History</button>
@@ -469,5 +487,7 @@
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="app.js"></script>
+<script src="tour-config.js"></script>
+<script src="tour.js"></script>
 </body>
 </html>
