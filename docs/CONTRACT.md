@@ -230,7 +230,8 @@ All fields optional; omitted = historical setting. `{}` returns the baseline.
   "b4":  {"mode": "historical" | "fixed" | "offset", "mw": 0},
   "b6":  {"mode": "historical" | "fixed" | "offset", "mw": 0},
   "batteries": [{"battery_id": "user_1", "lat": 57.5, "lon": -4.2, "zone": "north_scotland",
-                 "power_mw": 100, "energy_mwh": 200, "efficiency": 0.88, "dispatcher": "rule" | "lp"}],
+                 "power_mw": 100, "energy_mwh": 200, "efficiency": 0.88, "dispatcher": "rule" | "lp",
+                 "site": "grid" | "farm", "radius_km": 20}],
   "weather": {"wind_scale": 1.0, "replay_start": null, "replay_end": null},
   "window": {"start": "2025-01-01", "end": "2026-01-01"},
   "forecast_quality": "none" | "ours" | "perfect",
@@ -243,6 +244,11 @@ All fields optional; omitted = historical setting. `{}` returns the baseline.
   "carbon_intensity_t_mwh": 0.37
 }
 ```
+
+Battery `site` (default `"grid"`): a grid battery can store waste anywhere in its zone (north of B4: B4 and B6
+waste; between B4 and B6: B6 waste). A `"farm"` battery shares a connection with every farm within `radius_km`
+(default 20) in its own zone, else the nearest farm in that zone, and can store only those farms' would-be waste;
+`farm_ids` in the response names them (empty for a grid battery).
 
 Levers 1, 2, 4, 8, 12, 13 (first block) are Core; 3, 6, 9, 10, 11 (second block) are Full; levers 5
 and 7 (electrolysers, fleet editing) are Stretch and will be added here when built.
@@ -257,7 +263,8 @@ and 7 (electrolysers, fleet editing) are Stretch and will be added here when bui
                "payments_gbp": 2.4e8, "replacement_gas_gbp": 7.0e8, "co2_t": 2.6e6, "homes_equiv": 2.4e6},
   "baseline": {"...same keys...": 0},
   "delta":    {"...same keys, scenario minus baseline...": 0},
-  "batteries": [{"battery_id", "captured_curtailment_mwh", "revenue_gbp", "cycles"}],
+  "batteries": [{"battery_id", "captured_curtailment_mwh", "revenue_gbp", "cycles", "forecast_fallback_periods",
+                 "site", "farm_ids"}],
   "farms": [{"farm_id", "curtailed_mwh", "baseline_curtailed_mwh"}],
   "meta": {...}
 }
