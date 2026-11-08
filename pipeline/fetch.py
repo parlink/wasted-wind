@@ -64,6 +64,10 @@ OPENMETEO = {  # api: (url, hourly variables)
     "previous_runs": ("https://previous-runs-api.open-meteo.com/v1/forecast",
                       "wind_speed_100m_previous_day2,wind_direction_100m_previous_day2,"
                       "temperature_2m_previous_day2"),
+    # #49: older runs for forecasts issued 2-6 days ahead (lead k uses previous_day(k+1); see
+    # features.weather_run_days). Open-Meteo keeps runs up to 7 days old, complete from ~2024-06.
+    "previous_runs_week": ("https://previous-runs-api.open-meteo.com/v1/forecast",
+                           ",".join(f"wind_speed_100m_previous_day{n}" for n in range(3, 8))),
 }
 
 # Column whose value decides which window a record belongs to; None = windows already disjoint.
@@ -315,6 +319,7 @@ def main(argv=None):
     p.add_argument("--datasets", nargs="+", default=BMU_DATASETS, help="for --sources bmu")
     p.add_argument("--workers", type=int, default=6)
     p.add_argument("--refresh-neso", action="store_true")
+    p.add_argument("--apis", nargs="+", default=list(OPENMETEO), help="for --sources openmeteo")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
@@ -342,7 +347,7 @@ def main(argv=None):
         farms = (pd.read_csv(ROOT / "reference" / "farms.csv")
                  .drop_duplicates("farm_id")[["farm_id", "lat", "lon"]])
         last_day = (end - timedelta(days=1)).date()
-        jobs = [(api, f.farm_id, f.lat, f.lon, y0, y1) for api in OPENMETEO
+        jobs = [(api, f.farm_id, f.lat, f.lon, y0, y1) for api in a.apis
                 for f in farms.itertuples() for y0, y1 in year_windows(start.date(), last_day)]
         failed += run_jobs("openmeteo", fetch_openmeteo, jobs, workers=2)
 
