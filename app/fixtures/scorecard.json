@@ -41,10 +41,10 @@
     {
       "strategy": "forecast",
       "dispatcher": "rule",
-      "captured_curtailment_mwh": 929.6,
-      "revenue_gbp": 48724.0,
-      "payments_avoided_gbp": 55776.0,
-      "capture_ratio": 0.891
+      "captured_curtailment_mwh": 878.5,
+      "revenue_gbp": 47388.0,
+      "payments_avoided_gbp": 52711.0,
+      "capture_ratio": 0.866
     },
     {
       "strategy": "perfect",

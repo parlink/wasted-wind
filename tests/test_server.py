@@ -22,7 +22,8 @@ client = TestClient(app)
 def test_fixture_parquet_matches_contract(name):
     cols, ts_cols = contract.PARQUET_FILES[name]
     df = pd.read_parquet(FIXTURES_DIR / name)
-    assert list(df.columns) == cols
+    optional = contract.RESIDUAL_OPTIONAL if name == "residual.parquet" else []
+    assert list(df.columns) == cols + optional
     assert len(df) > 0
     for c in ts_cols:
         assert str(df[c].dt.tz) == "UTC", c
@@ -222,3 +223,13 @@ def test_wind_endpoint_offline_is_503(monkeypatch):
     monkeypatch.setattr(server, "fetch_wind", boom)
     server._wind_cache.clear()
     assert client.get("/api/wind?date=2025-11-07").status_code == 503
+
+
+def test_schedule_marks_executed_half_hours_on_the_live_day():
+    day = client.get("/api/autopilot/schedule?strategy=forecast").json()
+    steps = day["batteries"][0]["steps"]
+    done = [s for s in steps if s["executed"]]
+    assert done and len(done) < len(steps)                       # some done, the rest still a plan
+    assert all(s["period_start"] < steps[len(done)]["period_start"] for s in done)
+    past = client.get("/api/autopilot/schedule?strategy=perfect").json()
+    assert not any(s["executed"] for b in past["batteries"] for s in b["steps"])

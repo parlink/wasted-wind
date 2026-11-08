@@ -134,6 +134,27 @@
       <div class="chart-box"><canvas id="backtest-chart" aria-label="Backtest forecast against actual"></canvas></div>
     </div>
 
+    <div class="block" id="tm">
+      <div class="detail-head"><h3>Look back at any past day</h3><span class="tag-est t-est">as it was made</span></div>
+      <p class="note">The forecast exactly as it was made at 10:00 the day before, using only what was known then, next to what
+        really happened, and what the batteries did with it. Pick a stormy day and see whether we saw it coming.</p>
+      <div class="filter-row date-row">
+        <button type="button" id="tm-prev" class="icon-btn" aria-label="Previous day">‹</button>
+        <input type="date" id="tm-date" aria-label="Day to look back at">
+        <button type="button" id="tm-next" class="icon-btn" aria-label="Next day">›</button>
+        <button type="button" id="tm-storm" class="btn-secondary">Biggest storm</button>
+      </div>
+      <div class="tiles">
+        <div class="tile"><div class="label">Forecast the day before</div><div class="value" id="tm-pred">–</div></div>
+        <div class="tile"><div class="label">Really wasted</div><div class="value" id="tm-actual">–</div><div class="delta" id="tm-err"></div></div>
+      </div>
+      <div id="tm-legend" class="legend"></div>
+      <div class="chart-box"><canvas id="tm-chart" aria-label="Forecast as issued against what happened, hour by hour"></canvas></div>
+      <h4>What the batteries did that day</h4>
+      <div class="table-wrap"><table id="tm-batteries" class="table"></table></div>
+      <p id="tm-note" class="note"></p>
+    </div>
+
     <div class="block">
       <h3>What the forecast pays attention to</h3>
       <p class="note">A longer bar means that input moves the prediction more, on average (mean |SHAP|).</p>

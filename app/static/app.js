@@ -556,7 +556,7 @@ function selectFarm(id) {
     loadFarmDetail().catch(showError);
     if (state.farm) $("farm-detail").scrollIntoView({ behavior: "smooth", block: "start" });
   } else if (state.tab === "predict" && state.tomorrow) {
-    renderPredict();
+    renderPredict(); if (tmInit && state.tm.date) renderTimeMachine();
   }
 }
 
@@ -638,6 +638,7 @@ async function loadPredict() {
     renderPredict();
     updateMap();
     updateWind();
+    loadTimeMachine().catch(showError);
   } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
 }
 
@@ -733,6 +734,99 @@ async function loadBacktest() {
     { label: "actual", data: s.map((p) => p.actual_mwh), borderColor: C.planned },
     { label: "forecast", data: s.map((p) => p.pred_mwh), borderColor: C.waste },
   ], { yLabel: "MWh per day" });
+}
+
+// ---------- Look back: the forecast as issued, what happened, and the batteries, for one past day ----------
+
+state.tm = { date: null, range: null, storm: null };
+let tmInit = false;
+
+async function loadTimeMachine() {
+  if (!tmInit) {
+    tmInit = true;
+    $("tm-date").addEventListener("change", (e) => { if (e.target.value) { state.tm.date = e.target.value; renderTimeMachine(); } });
+    $("tm-prev").addEventListener("click", () => shiftTm(-1));
+    $("tm-next").addEventListener("click", () => shiftTm(1));
+    $("tm-storm").addEventListener("click", () => { if (state.tm.storm) { state.tm.date = state.tm.storm; renderTimeMachine(); } });
+    // the days with an honest day-ahead forecast = the backtest; find them and the biggest day once
+    const bt = await api("/api/forecast/backtest");
+    const daily = dailySums(bt.series.map((p) => ({ period_start: p.hour_start, actual_mwh: p.actual_mwh })), ["actual_mwh"]);
+    const days = [...daily.keys()].sort();
+    if (!days.length) { $("tm-note").textContent = "No backtest forecasts in this data."; return; }
+    state.tm.range = { first: days[0], last: days[days.length - 1] };
+    state.tm.storm = days.reduce((a, d) => ((daily.get(d).actual_mwh || 0) > (daily.get(a).actual_mwh || 0) ? d : a), days[0]);
+    state.tm.date = state.tm.storm;
+    $("tm-date").min = state.tm.range.first; $("tm-date").max = state.tm.range.last;
+  }
+  if (state.tm.date) await renderTimeMachine();
+}
+
+function shiftTm(delta) {
+  if (!state.tm.date || !state.tm.range) return;
+  const d = isoDay(new Date(new Date(`${state.tm.date}T00:00:00Z`).getTime() + delta * DAY_MS));
+  if (d < state.tm.range.first || d > state.tm.range.last) return;
+  state.tm.date = d; renderTimeMachine();
+}
+
+async function renderTimeMachine() {
+  const day = state.tm.date, next = isoDay(new Date(new Date(`${day}T00:00:00Z`).getTime() + DAY_MS));
+  $("tm-date").value = day;
+  $("tm-prev").disabled = day <= state.tm.range.first; $("tm-next").disabled = day >= state.tm.range.last;
+  const box = $("tm"); box.classList.add("loading");
+  try {
+    const farm = state.farm ? `&farm_id=${encodeURIComponent(state.farm)}` : "";
+    const [bt, ...plans] = await Promise.all([
+      api(`/api/forecast/backtest?start=${day}&end=${next}${farm}`),
+      ...["forecast", "reactive", "perfect"].map((s) => api(`/api/autopilot/schedule?date=${day}&strategy=${s}`).catch(() => null)),
+    ]);
+    if (state.tm.date !== day) return;   // the user moved on meanwhile
+    const s = bt.series;
+    const pred = s.reduce((a, p) => a + (p.pred_mwh || 0), 0), act = s.reduce((a, p) => a + (p.actual_mwh || 0), 0);
+    $("tm-pred").textContent = fmtEnergy(pred);
+    $("tm-actual").textContent = fmtEnergy(act);
+    $("tm-err").textContent = act > 0.5 ? `forecast was ${fmtPct(Math.abs(pred - act) / act)} ${pred >= act ? "high" : "low"}` : "";
+    legend($("tm-legend"), [{ label: "Really wasted", color: C.planned, kind: "line" },
+      { label: "Our forecast, made the day before", color: C.waste, kind: "line" },
+      { label: "Simple windy-day rule", color: C.neutral, kind: "line" }]);
+    lineChart("tm-chart", s.map((p) => hourFmt.format(new Date(p.hour_start))), [
+      { label: "actual", data: s.map((p) => p.actual_mwh), borderColor: C.planned },
+      { label: "forecast", data: s.map((p) => p.pred_mwh), borderColor: C.waste },
+      { label: "windy-day rule", data: s.map((p) => p.wind_rule_mwh), borderColor: C.neutral, borderDash: [4, 3] },
+    ], { yLabel: "MWh per hour" });
+
+    const t = clear($("tm-batteries"));
+    t.append(el("thead", {}, el("tr", {}, el("th", {}, "Batteries planned with"), el("th", { class: "num" }, "Wasted wind stored"),
+      el("th", { class: "num" }, "Earned"))));
+    const tb = el("tbody");
+    const names = { forecast: "Our forecast", reactive: "No forecast", perfect: "Knowing the future" };
+    ["forecast", "reactive", "perfect"].forEach((k, i) => {
+      const p = plans[i];
+      if (!p || !p.batteries.length) return;
+      const steps = p.batteries.flatMap((b) => b.steps);
+      const stored = steps.reduce((a, x) => a + (x.captured_curtailment_mwh || 0), 0);
+      const earned = steps.reduce((a, x) => a + (x.revenue_gbp || 0), 0);
+      tb.append(el("tr", { class: k === "forecast" ? "ours" : "" }, el("td", {}, names[k]),
+        el("td", { class: "num" }, fmtEnergy(stored)), el("td", { class: "num" }, fmtCompact(earned, "£"))));
+    });
+    t.append(tb);
+    // why: the dispatcher's most common reason that day (numbers stripped), in plain words when it's the usual storm story
+    const ours = plans[0] && plans[0].batteries.flatMap((b) => b.steps);
+    let why = "";
+    if (ours && ours.length) {
+      const count = {};
+      for (const x of ours) { const r = String(x.reason || "").split(",")[0].trim(); count[r] = (count[r] || 0) + 1; }
+      const [top, n] = Object.entries(count).sort((a, b) => b[1] - a[1])[0];
+      why = /holding: full/.test(top)
+        ? `Most of the day (${fmtPct(n / ours.length)} of half hours) the batteries were already full and the pinch points had no room to sell into: on a storm day the cable, not the battery, is the limit. `
+        : `Most common decision that day: "${top}" (${fmtPct(n / ours.length)} of half hours). `;
+    }
+    $("tm-note").textContent = why + (state.farm ? `Forecast for ${farmName(state.farm)} only (click "All farms" on History to see every farm). ` : "Forecast for all 33 farms. ")
+      + `Batteries: the ${plans[0] && plans[0].batteries.length ? plans[0].batteries.length : 4} in the Batteries tab, all together. `
+      + "One day can go either way (batteries store on one day and sell on another, and the one that knows the future plans "
+      + "across the whole period); the fair comparison is the period total on the Batteries tab. "
+      + `Only ${dayFmt.format(new Date(`${state.tm.range.first}T00:00:00Z`))} – ${dayFmt.format(new Date(`${state.tm.range.last}T00:00:00Z`))} can be looked back at: `
+      + "earlier days were used to train the model, so a forecast for them would be cheating.";
+  } catch (e) { showError(e); } finally { box.classList.remove("loading"); }
 }
 
 // ---------- Simulate ----------
@@ -1138,6 +1232,11 @@ async function loadApDay() {
   } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
 }
 
+function bat0Done(day) {
+  const b = day.batteries && day.batteries[0];
+  return b ? b.steps.filter((x) => x.executed).length : 0;
+}
+
 function renderApDay() {
   const day = state.ap.day;
   const bat = day.batteries[0];
@@ -1146,7 +1245,9 @@ function renderApDay() {
   const stale = day.live && issued && Date.now() - issued.getTime() > 36 * 3600 * 1000;
   badge.textContent = day.live ? (stale ? "live · stale" : "live") : "replay of the backtest";
   badge.className = "tag" + (day.live && !stale ? " live" : stale ? " stale" : "");
-  $("ap-issued").textContent = issued ? `Plan made ${shortFmt.format(issued)} UTC, using only what was known at that time.` : "";
+  const nDone = bat0Done(day);
+  $("ap-issued").textContent = (issued ? `Plan made ${shortFmt.format(issued)} UTC, using only what was known at that time.` : "") +
+    (nDone ? ` The first ${nDone} half hours show what the battery actually did; the rest is its plan.` : "");
   legend($("ap-legend"), [{ label: "Storing wasted wind", color: AP_COLORS.charge },
     { label: "Selling (cables have room)", color: AP_COLORS.discharge }, { label: "Waiting", color: AP_COLORS.hold }]);
 
@@ -1163,14 +1264,17 @@ function renderApDay() {
   $("ap-day-sum").textContent = `${bat.battery_id}: stored ${fmtEnergy(caught)} of wasted wind` + (rev == null ? "" : `, earned ${fmtCompact(rev, "£")}`) +
     ` · ${n("charge")} half hours storing, ${n("discharge")} selling, ${n("hold")} waiting`;
   strip.setAttribute("aria-label", `Actions through the day for ${bat.battery_id}`);
+  const mixed = day.live || bat0Done(day) > 0;   // part done, part still a plan
   steps.forEach((x, i) => {
     const time = hourFmt.format(new Date(x.period_start));
-    strip.append(el("span", { style: { background: AP_COLORS[x.action] || C.grid }, title: `${time} · ${x.action}: ${x.reason}`,
+    strip.append(el("span", { class: mixed && !x.executed ? "planned" : "",
+      style: { background: AP_COLORS[x.action] || C.grid }, title: `${time} · ${x.executed ? "done" : mixed ? "planned" : x.action}: ${x.action}, ${x.reason}`,
       onmouseenter: () => highlightApStep(i, false) }));
     log.append(el("div", { class: "row", "data-i": i },
       el("span", { class: "t" }, time),
       el("span", { class: "a" }, el("i", { style: { background: AP_COLORS[x.action] || C.grid } }), x.action),
-      el("span", {}, x.reason + (x.power_mw ? ` (${nf(0).format(x.power_mw)} MW)` : ""))));
+      el("span", {}, x.reason + (x.power_mw ? ` (${nf(0).format(x.power_mw)} MW)` : ""),
+        x.executed ? el("span", { class: "tag live-done" }, "done") : mixed ? el("span", { class: "tag" }, "plan") : "")));
   });
   const cap = (state.ap.scorecard.batteries.find((b) => b.battery_id === bat.battery_id) || {}).energy_mwh;
   lineChart("ap-soc-chart", steps.map((x) => hourFmt.format(new Date(x.period_start))), [

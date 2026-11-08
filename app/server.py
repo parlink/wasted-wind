@@ -265,15 +265,39 @@ def autopilot_schedule(date: Optional[str] = None, battery_id: Optional[str] = N
     s = s[(s["period_start"] >= day) & (s["period_start"] < day + pd.Timedelta(days=1))]
     # live mode re-plans: for each half hour keep the newest plan
     s = s.sort_values("plan_issued_at").drop_duplicates(["battery_id", "period_start"], keep="last")
+    s = s.assign(executed=False)
+    # past live half hours: what the battery actually did (live_executed.parquet), not the plan
+    ex = executed_rows(src, strategy, dispatcher, day, battery_id)
+    if ex is not None and len(ex):
+        key = ["battery_id", "period_start"]
+        done = pd.MultiIndex.from_frame(ex[key])
+        s = pd.concat([s[~pd.MultiIndex.from_frame(s[key]).isin(done)], ex.assign(executed=True)], ignore_index=True)
     today = pd.Timestamp.now(tz="UTC").normalize()
     out = [{"battery_id": bid,
             "steps": records(g.sort_values("period_start")[["period_start", "action", "power_mw", "soc_mwh", "reason",
-                                                             "captured_curtailment_mwh", "revenue_gbp"]])}
+                                                             "captured_curtailment_mwh", "revenue_gbp", "executed"]])}
            for bid, g in s.groupby("battery_id", sort=True)]
     return {"plan_issued_at": iso(s["plan_issued_at"].max()) if len(s) else None,
             "live": bool(day >= today), "date": day.strftime("%Y-%m-%d"),
             "strategy": strategy, "dispatcher": dispatcher, "batteries": out, "available": available,
             "meta": meta(src)}
+
+
+def executed_rows(sched_src: str, strategy: str, dispatcher: str, day: pd.Timestamp, battery_id: Optional[str]):
+    """Executed live rows for one day, or None. Only from the same side (real/fake) as the schedules, and only
+    for the strategy and planner the live battery runs (the file records them)."""
+    try:
+        path, src = data.resolve("live_executed.parquet")
+    except FileNotFoundError:
+        return None
+    if src != sched_src or not path.exists():
+        return None
+    ex, _ = data.table("live_executed.parquet")
+    ex = ex[(ex["strategy"] == strategy) & (ex["dispatcher"] == dispatcher)
+            & (ex["period_start"] >= day) & (ex["period_start"] < day + pd.Timedelta(days=1))]
+    if battery_id is not None:
+        ex = ex[ex["battery_id"] == battery_id]
+    return ex
 
 
 @app.get("/api/autopilot/scorecard")

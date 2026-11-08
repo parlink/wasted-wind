@@ -19,6 +19,9 @@ RESIDUAL_COLUMNS = [
     "boundary_flow_mw", "wind_delivered_mwh", "market_price_gbp_mwh", "gb_demand_mw",
 ]
 
+# optional extra columns (newer data releases); readers must cope when they're absent
+RESIDUAL_OPTIONAL = ["temperature_2m_c"]
+
 FORECAST_COLUMNS = [
     "farm_id", "zone", "hour_start", "issued_at", "split", "curtailed_mwh_pred",
     "curtailed_mwh_p10", "curtailed_mwh_p90", "curtailed_mwh_actual",
@@ -36,6 +39,8 @@ PARQUET_FILES = {
     "residual.parquet": (RESIDUAL_COLUMNS, ["period_start"]),
     "forecast.parquet": (FORECAST_COLUMNS, ["hour_start", "issued_at"]),
     "schedules.parquet": (SCHEDULES_COLUMNS, ["period_start", "plan_issued_at"]),
+    # what the live batteries actually did (CONTRACT §5, dispatch/live.py); only exists once live mode has run
+    "live_executed.parquet": (SCHEDULES_COLUMNS, ["period_start", "plan_issued_at"]),
 }
 JSON_FILES = ("model_metrics.json", "scorecard.json")
 
