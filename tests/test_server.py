@@ -195,3 +195,30 @@ def test_autopilot_schedule_reports_available_days_and_step_results():
 def test_autopilot_schedule_unknown_date_is_empty_not_error():
     s = _ok("/api/autopilot/schedule?date=1999-01-01")
     assert s["batteries"] == [] and s["available"]["first"]
+
+
+def test_wind_endpoint_shapes_and_caches(monkeypatch):
+    from app import server
+    calls = []
+
+    def fake(lats, lons, day, recent):
+        calls.append(day)
+        return [{"hourly": {"wind_speed_100m": [10.0] * 24, "wind_direction_100m": [225.0] * 24}} for _ in lats]
+    monkeypatch.setattr(server, "fetch_wind", fake)
+    server._wind_cache.clear()
+    r = client.get("/api/wind?date=2025-11-06")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["hours"]) == 24 and body["farms"] and len(body["farms"][0]["speed_ms"]) == 24
+    client.get("/api/wind?date=2025-11-06")
+    assert calls == ["2025-11-06"]                       # cached
+
+
+def test_wind_endpoint_offline_is_503(monkeypatch):
+    from app import server
+
+    def boom(*a):
+        raise ConnectionError("no wifi")
+    monkeypatch.setattr(server, "fetch_wind", boom)
+    server._wind_cache.clear()
+    assert client.get("/api/wind?date=2025-11-07").status_code == 503

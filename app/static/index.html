@@ -12,6 +12,16 @@
 
 <div id="map" aria-label="Map of Scottish wind farms"></div>
 <div id="map-legend" class="map-legend"></div>
+<div id="wind-ctl" class="wind-ctl">
+  <button type="button" id="wind-toggle" class="btn-secondary" aria-pressed="false">Wind</button>
+  <div id="wind-body" hidden>
+    <div class="wind-row">
+      <button type="button" id="wind-play" class="icon-btn" aria-label="Play through the day">▶</button>
+      <input type="range" id="wind-hour" min="0" max="23" step="1" value="12" aria-label="Hour (UTC)">
+    </div>
+    <div id="wind-label" class="note"></div>
+  </div>
+</div>
 <div id="map-tip" class="tip" hidden></div>
 <div id="fake-banner" class="fake-banner" hidden>Demo data: these are not real numbers</div>
 
