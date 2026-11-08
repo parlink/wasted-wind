@@ -543,6 +543,7 @@ function renderReveal() {
   // so a window's net payment can be below zero: flip the label, never show "£-37k"
   const farmsPaid = t.payments_gbp < 0;
   $("t-payments").previousElementSibling.textContent = farmsPaid ? "Farms paid to switch off (net)" : "Paid to farms to switch off";
+  addInfo("t-payments");
   countUp($("t-payments"), fmtCompact(Math.abs(t.payments_gbp), "£"));
   countUp($("t-gas"), fmtCompact(t.replacement_gas_gbp, "£"));
   countUp($("t-co2"), `${fmtCompact(t.co2_t)} t`);
@@ -2037,7 +2038,54 @@ function initAbout() {
   if (!seen && !/[?&](notour\b|tour=)/.test(location.search)) showAbout(true);   // never over a tour started from the URL
 }
 
+
+// ---------- "where does this number come from?": a grey ⓘ beside each number's label ----------
+const GAS_NOTE = "gas at 80p/therm burned at 50% efficiency (about £55/MWh) plus carbon at £50/t × 0.37 t per MWh (about £18.50), so about £73 per MWh";
+const SIM_NOTE = " In Simulate, the same sum is done on your scenario: the real 2024–2026 history replayed with your changes. The line underneath is your scenario minus what really happened.";
+const INFO = {
+  "hero-value": "What each farm planned to generate (Elexon physical notifications) minus what the grid let it generate after its switch-off orders (bid-offer acceptances), added up over the 33 farms we track and every half hour in the period. Cross-checked against wind speed through each farm's power curve.",
+  "t-payments": "Each wasted MWh × the price that farm itself bid to be paid to switch off (Elexon bid-offer data), added up. It's a net figure: a few farms on government price contracts pay to switch off when power prices go negative.",
+  "t-gas": `Each wasted MWh × the cost of making it in a gas plant instead: ${GAS_NOTE}.`,
+  "t-co2": "Each wasted MWh × 0.37 tonnes of CO₂, typical for electricity from a gas plant.",
+  "t-homes": "Wasted MWh ÷ 2.7 MWh, a typical British home's electricity use in a year.",
+  "pred-value": "Our machine-learning forecast (LightGBM), added up over the farms and hours shown. It reads 17 signals: weather forecasts at each farm, the power-line limits, the demand forecast, switch-off prices and recent waste. The likely range comes from two extra models for the low (10%) and high (90%) ends.",
+  "tm-pred": "The forecast exactly as it was saved at 10:00 the day before, made only with data available at that time.",
+  "tm-actual": "What was really wasted that day, measured afterwards from Elexon records: planned output minus what the grid allowed.",
+  "sim-value": "Wasted wind in your scenario: planned minus allowed, recomputed with your changes to power lines, cables, batteries, demand and weather." + SIM_NOTE,
+  "s-payments": "Each wasted MWh in your scenario × the farm's own switch-off price (scaled if you changed the switch-off price)." + SIM_NOTE,
+  "s-gas": `Each wasted MWh in your scenario × the cost of gas power instead: ${GAS_NOTE}, or your own gas and carbon prices.` + SIM_NOTE,
+  "s-co2": "Each wasted MWh in your scenario × 0.37 t of CO₂ per MWh of gas power (or your own value)." + SIM_NOTE,
+  "s-homes": "Wasted MWh in your scenario ÷ 2.7 MWh, a typical home's electricity use in a year." + SIM_NOTE,
+  "ap-headline": "The same 4 batteries, replayed against what really happened on Aug–Oct 2026 (months never used to tune the planner). With our forecast they earned 35% of the most possible (a battery that knows the future); without a forecast, 27%. 35 ÷ 27 − 1 ≈ 27% more. Revenue = MWh sold × the real market price for that half hour (Elexon).",
+};
+function addInfo(id) {
+  const value = $(id);
+  if (!value || !INFO[id]) return;
+  const box = value.closest(".tile, .hero");
+  const label = box && box.querySelector(".label");
+  if (!label || label.querySelector(".info")) return;
+  label.append(el("span", { class: "info", tabindex: "0", role: "button", "aria-label": `How this is worked out: ${INFO[id]}`, "data-tip": INFO[id] }, "i"));
+}
+function initInfo() {
+  Object.keys(INFO).forEach(addInfo);
+  const tip = el("div", { id: "info-tip", role: "tooltip", hidden: "" });
+  document.body.append(tip);
+  const show = (e) => {
+    const t = e.target.closest && e.target.closest(".info");
+    if (!t) return;
+    tip.textContent = t.dataset.tip; tip.hidden = false;
+    const r = t.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+    const left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2));
+    const top = r.bottom + 8 + h < window.innerHeight ? r.bottom + 8 : r.top - h - 8;
+    tip.style.left = `${left}px`; tip.style.top = `${top}px`;
+  };
+  const hide = (e) => { if (e.target.closest && e.target.closest(".info")) tip.hidden = true; };
+  document.addEventListener("mouseover", show); document.addEventListener("mouseout", hide);
+  document.addEventListener("focusin", show); document.addEventListener("focusout", hide);
+}
+
 async function boot() {
+  initInfo();
   initAbout();
   document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.addEventListener("click", () => { stopPlay(); setMode(b.dataset.mode); }));

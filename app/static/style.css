@@ -474,3 +474,12 @@ details.explain[open] summary { margin-bottom: 4px; }
 /* History: the period buttons span the same width as the date row beneath them */
 #tab-reveal .filter-row > .seg { display: flex; flex: 1; width: 100%; }
 #tab-reveal .filter-row > .seg button { flex: 1; }
+
+/* the grey ⓘ beside a number's label, and its tooltip */
+.info { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: 6px;
+  border-radius: 50%; background: rgba(118, 118, 128, 0.16); color: var(--muted); font: italic 700 10px/1 Georgia, serif;
+  cursor: help; vertical-align: 1px; user-select: none; }
+.info:hover, .info:focus-visible { background: rgba(118, 118, 128, 0.3); color: var(--ink-2); outline: none; }
+#info-tip { position: fixed; z-index: 2147483600; max-width: 300px; padding: 10px 12px; border-radius: 10px;
+  background: rgba(29, 29, 31, 0.94); color: #f5f5f7; font-size: 12.5px; line-height: 1.45; pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); }
