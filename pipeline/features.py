@@ -36,6 +36,9 @@ FEATURES = ["farm_code", "capacity_mw", "wind_fc_ms", "pot_farm_mw", "pot_north_
             "b4_limit_mw", "b6_limit_mw", "b4_excess_potential_mw", "b6_excess_potential_mw",
             "gb_demand_fc_mw", "lag48_mwh", "trailing_waste_rate", "bid_median_gbp_mwh",
             "hour", "weekday", "month"]
+# Order-book signals (#51) are built for every row but NOT in the main model: tested walk-forward
+# they didn't help (same MAE, lower recall, worse monthly totals); see ablations in model_metrics.
+OB_FEATURES = ["ob_bid_median_north_gbp_mwh", "ob_bid_median_south_gbp_mwh", "ob_cheap_bid_mw_north"]
 
 
 # ---------- small, tested pieces ----------
@@ -169,7 +172,7 @@ def hourly_demand(ndf: pd.DataFrame, issued_at: pd.Timestamp | None = None) -> p
 
 
 def build_panel(curt: pd.DataFrame, farms: pd.DataFrame, weather: pd.DataFrame,
-                limits: pd.DataFrame, ndf: pd.DataFrame) -> pd.DataFrame:
+                limits: pd.DataFrame, ndf: pd.DataFrame, ob_daily: pd.DataFrame | None = None) -> pd.DataFrame:
     """All signals plus the target, one row per farm-hour with a day-ahead weather forecast.
 
     limits: neso_limits_hourly output.
@@ -180,11 +183,11 @@ def build_panel(curt: pd.DataFrame, farms: pd.DataFrame, weather: pd.DataFrame,
     p["issued_at"] = issue_time(p.hour_start)
     p["asof_wind"] = p.hour_start - WIND_LEAD
     zone_pot = zone_potential(weather, farms, commissioning(curt))
-    return add_signals(p, curt, y, farms, limits, hourly_demand(ndf), zone_pot)
+    return add_signals(p, curt, y, farms, limits, hourly_demand(ndf), zone_pot, ob_daily)
 
 
 def add_signals(p: pd.DataFrame, curt: pd.DataFrame, y: pd.DataFrame, farms: pd.DataFrame,
-                lim: pd.DataFrame, dem_h: pd.DataFrame, zone_pot: pd.DataFrame) -> pd.DataFrame:
+                lim: pd.DataFrame, dem_h: pd.DataFrame, zone_pot: pd.DataFrame, ob_daily: pd.DataFrame | None = None) -> pd.DataFrame:
     """Add every signal to p (farm_id, zone, hour_start, wind_fc_ms, issued_at, asof_wind).
 
     Shared by the backtest panel and the live "tomorrow" rows, so both see identical features.
@@ -221,6 +224,13 @@ def add_signals(p: pd.DataFrame, curt: pd.DataFrame, y: pd.DataFrame, farms: pd.
     p["bid_median_gbp_mwh"] = key.map(trailing_daily(bids, "bid_price_gbp_mwh", 30, "median").trailing)
     p["asof_trailing"] = day - pd.Timedelta(days=2)
 
+    # order book (#51): bid signals from D-2, the latest complete day at the D-1 10:00 issue
+    from pipeline import orderbook as ob
+    obh = ob.for_hours(ob_daily if ob_daily is not None else pd.DataFrame(), p.hour_start)
+    for c in ob.SIGNALS:
+        p[c] = obh[c].to_numpy()
+    p["asof_orderbook"] = obh.asof_orderbook.to_numpy()
+
     p["hour"], p["weekday"], p["month"] = p.hour_start.dt.hour, p.hour_start.dt.weekday, p.hour_start.dt.month
     p["farm_code"] = p.farm_id.map({f: i for i, f in enumerate(sorted(cap.index))})  # stable codes
     return p.sort_values(["hour_start", "farm_id"]).reset_index(drop=True)
@@ -232,7 +242,8 @@ def load_and_build() -> pd.DataFrame:
     farms = pd.read_csv(ROOT / "reference" / "farms.csv")
     ndf = _concat_parquet(sorted((RAW / "elexon" / "NDF").glob("*.parquet")),
                           ["publishTime", "startTime", "demand"])
-    return build_panel(curt, farms, load_weather_forecast(), load_limits(), ndf)
+    from pipeline import orderbook as ob
+    return build_panel(curt, farms, load_weather_forecast(), load_limits(), ndf, ob.load_daily(farms))
 
 
 def load_limits() -> pd.DataFrame:

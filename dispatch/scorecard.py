@@ -165,7 +165,12 @@ def load_inputs():
 DISPATCHERS = {"rule": plan_day, "lp": optimiser.plan_day}
 
 
-def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: str = "rule") -> pd.DataFrame:
+def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: str = "rule",
+           price_fc=None, stats: dict | None = None) -> pd.DataFrame:
+    """price_fc: optional day -> 48 expected prices (pipeline.price.by_day); else the 7-day mean.
+    stats: optional dict, filled with the planned days that used the price forecast ("forecast_days") and
+    those that fell back to the 7-day mean ("fallback_days"), so a silent lookup failure can't pass as
+    "no gain" (#57 review)."""
     days = len(hist) // 48 - PRE_DAYS          # the first PRE_DAYS days are history only
     soc, rows = 0.0, []
     for d in range(PRE_DAYS, PRE_DAYS + days):
@@ -182,7 +187,10 @@ def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: 
                 sig, exp_p, exp_h = actual_w, actual_p, actual_h
             else:
                 sig = np.zeros(48) if strategy == "reactive" else np.nan_to_num(f["fc"][sl])
-                exp_p = expected_price(price, d)
+                fc_p = price_fc(day_start) if price_fc is not None else None
+                exp_p = fc_p if fc_p is not None else expected_price(price, d)
+                if stats is not None and price_fc is not None:
+                    stats.setdefault("forecast_days" if fc_p is not None else "fallback_days", []).append(day_start)
                 exp_h = head_zone[(d - 2) * 48:(d - 1) * 48]    # same half hour on D-2
             plan = DISPATCHERS[dispatcher](battery, sig, exp_p, exp_h, soc)
             out = execute(battery, plan, actual_w, actual_p, actual_h, soc, plan["reason"])
@@ -232,6 +240,49 @@ def choose_fraction(hist, price, head, farm) -> dict:
     return {"chosen": best, "selected_on": list(TUNE_MONTHS), "forecast_revenue_gbp_by_fraction": scores}
 
 
+def price_forecast_effect(bats, hist, price, head, farm, hold: dict, tot: pd.DataFrame) -> dict | None:
+    """#51 money test: capture ratio planning with the price forecast vs the 7-day mean, same
+    batteries, same ceiling (perfect/lp, actual prices). Full period and hold-out months."""
+    path = PROCESSED / "price_forecast.parquet"
+    if not path.exists():
+        return None
+    from pipeline.price import by_day
+    lookup = by_day(pd.read_parquet(path))
+    ceiling, ceiling_hold = float(tot.loc["perfect/lp", "revenue_gbp"]), hold["perfect/lp"]
+    out = {}
+    for strat in ("forecast", "reactive"):
+        key = f"{strat}/lp"
+        stats: dict = {}
+        rev = pd.concat([replay(b, strat, hist, price, head[b["zone"]], farm[b["battery_id"]], "lp", lookup, stats)
+                         for b in bats], ignore_index=True)
+        used = pd.DatetimeIndex(stats.get("forecast_days", []))
+        fell = pd.DatetimeIndex(stats.get("fallback_days", []))
+        held_fell = fell[fell.strftime("%Y-%m").isin(HOLDOUT_MONTHS)]
+        if len(held_fell):   # the hold-out comparison must be the price forecast on every day, or it means nothing
+            raise RuntimeError(f"price forecast missing on {len(held_fell)} battery-days in the hold-out months "
+                               f"(first {held_fell.min():%Y-%m-%d}); check price_forecast.parquet covers {HOLDOUT_MONTHS}")
+        full, held = float(rev.revenue_gbp.sum()), _revenue(rev, HOLDOUT_MONTHS)
+        out[key] = {
+            "capture_ratio_7day": round(float(tot.loc[key, "revenue_gbp"]) / ceiling, 4),
+            "capture_ratio_price_forecast": round(full / ceiling, 4),
+            "holdout_capture_ratio_7day": round(hold[key] / ceiling_hold, 4),
+            "holdout_capture_ratio_price_forecast": round(held / ceiling_hold, 4),
+            "revenue_gbp_7day": round(float(tot.loc[key, "revenue_gbp"]), 0),
+            "revenue_gbp_price_forecast": round(full, 0),
+            # outside the price backtest months the plan falls back to the 7-day mean, so the full-period
+            # figure mixes both; the hold-out figure is the price forecast on every day (checked above)
+            "battery_days_with_price_forecast": int(len(used)),
+            "battery_days_fallback_7day": int(len(fell)),
+            "months_with_price_forecast": sorted(set(used.strftime("%Y-%m"))),
+            # half hours missing from a day's price forecast, filled from that day's neighbours (pipeline.price.by_day)
+            "price_forecast_days_with_filled_slots": len(lookup.filled),
+            "price_forecast_slots_filled": int(sum(lookup.filled.values()))}
+        log.info("price forecast, %s: capture %.3f (7-day %.3f); hold-out %.3f (7-day %.3f)", key,
+                 out[key]["capture_ratio_price_forecast"], out[key]["capture_ratio_7day"],
+                 out[key]["holdout_capture_ratio_price_forecast"], out[key]["holdout_capture_ratio_7day"])
+    return out
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     periods, hist, price, head, farm = load_inputs()
@@ -262,6 +313,7 @@ def main():
 
     ratios = capture_ratios(tot.revenue_gbp.to_dict())
     hold = {k: _revenue(sched[sched.key == k], HOLDOUT_MONTHS) for k in keys}
+    price_effect = price_forecast_effect(bats, hist, price, head, farm, hold, tot)
     out = {"period": {"start": f"{periods[0]:%Y-%m-%dT%H:%M:%SZ}",
                       "end": f"{periods[-1] + pd.Timedelta(minutes=30):%Y-%m-%dT%H:%M:%SZ}"},
            "batteries": [{k: b[k] for k in ("battery_id", "farm_id", "zone", "power_mw", "energy_mwh",
@@ -276,6 +328,7 @@ def main():
                        "exceed what the boundary could carry; ratios are comparable, £ sums are optimistic",
                        "the whole-period LP carries SoC across months, so its Aug-Oct slice is a near-bound, "
                        "not a strict bound, for that window"],
+           **({"price_forecast_effect": price_effect} if price_effect else {}),
            "holdout": {"months": list(HOLDOUT_MONTHS),
                        "capture_ratio": capture_ratios(hold),
                        "revenue_gbp": {k: round(v, 0) for k, v in hold.items()}},
