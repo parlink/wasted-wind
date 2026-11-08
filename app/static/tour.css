@@ -5,6 +5,7 @@
   /* ---- look: change these ---- */
   --tour-dim: rgba(14, 18, 24, 0.55);          /* how dark the page goes around the spotlight */
   --tour-accent: #ffffff;                      /* spotlight border: white on the dimmed page */
+  --tour-spot-outline: rgba(29, 29, 31, 0.55);  /* thin dark line around the white border, for steps with a light dim */
   --tour-ink: #1d1d1f;                         /* progress, the Next button: the panel's ink, not a series colour */
   --tour-ring: rgba(29, 29, 31, 0.65);         /* click ring: dark grey with a white halo, visible on map and panel */
   --tour-spot-radius: 0.7em;
@@ -29,7 +30,7 @@
 .tour-spot {
   position: fixed; box-sizing: border-box; pointer-events: none;
   border-radius: var(--tour-spot-radius); border: var(--tour-spot-border) solid var(--tour-accent);
-  box-shadow: 0 0 0 150vmax var(--tour-dim);
+  box-shadow: 0 0 0 0.1em var(--tour-spot-outline), 0 0 0 150vmax var(--tour-dim);   /* dark line outside the white border: visible on light steps too */
   transition: left 0.28s ease, top 0.28s ease, width 0.28s ease, height 0.28s ease;
 }
 
