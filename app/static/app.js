@@ -2048,15 +2048,15 @@ const INFO = {
   "t-gas": `Each wasted MWh × the cost of making it in a gas plant instead: ${GAS_NOTE}.`,
   "t-co2": "Each wasted MWh × 0.37 tonnes of CO₂, typical for electricity from a gas plant.",
   "t-homes": "Wasted MWh ÷ 2.7 MWh, a typical British home's electricity use in a year.",
-  "pred-value": "Our machine-learning forecast (LightGBM), added up over the farms and hours shown. It reads 17 signals: weather forecasts at each farm, the power-line limits, the demand forecast, switch-off prices and recent waste. The likely range comes from two extra models for the low (10%) and high (90%) ends.",
-  "tm-pred": "The forecast exactly as it was saved at 10:00 the day before, made only with data available at that time.",
+  "pred-value": "Our machine-learning forecast (LightGBM), added up over the farms and hours shown. It reads 17 signals: weather forecasts at each farm, the power-line limits, the demand forecast, switch-off prices and recent waste. The likely range comes from two extra models for the low (10%) and high (90%) ends. From day 2 on, there are no power-line limits yet (they are published the day before) and no range.",
+  "tm-pred": "The forecast as it would have been made at 10:00 the day before: a model trained only on earlier months, given only what was known at that time. Produced by a walk-forward replay, with tests that no input comes from later.",
   "tm-actual": "What was really wasted that day, measured afterwards from Elexon records: planned output minus what the grid allowed.",
   "sim-value": "Wasted wind in your scenario: planned minus allowed, recomputed with your changes to power lines, cables, batteries, demand and weather." + SIM_NOTE,
   "s-payments": "Each wasted MWh in your scenario × the farm's own switch-off price (scaled if you changed the switch-off price)." + SIM_NOTE,
   "s-gas": `Each wasted MWh in your scenario × the cost of gas power instead: ${GAS_NOTE}, or your own gas and carbon prices.` + SIM_NOTE,
   "s-co2": "Each wasted MWh in your scenario × 0.37 t of CO₂ per MWh of gas power (or your own value)." + SIM_NOTE,
   "s-homes": "Wasted MWh in your scenario ÷ 2.7 MWh, a typical home's electricity use in a year." + SIM_NOTE,
-  "ap-headline": "The same 4 batteries, replayed against what really happened on Aug–Oct 2026 (months never used to tune the planner). With our forecast they earned 35% of the most possible (a battery that knows the future); without a forecast, 27%. 35 ÷ 27 − 1 ≈ 27% more. Revenue = MWh sold × the real market price for that half hour (Elexon).",
+  "ap-headline": "The same batteries, replayed against what really happened on the months never used to tune the planner. Headline = the share of the most possible earned with our forecast ÷ the share earned without a forecast − 1, where 'the most possible' is the same battery knowing the future. Revenue = MWh sold × the real market price for that half hour (Elexon). The planner choice under More options changes it.",
 };
 function addInfo(id) {
   const value = $(id);
