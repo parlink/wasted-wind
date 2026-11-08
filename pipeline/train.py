@@ -144,9 +144,15 @@ def predict_all(models: dict, rows: pd.DataFrame) -> pd.DataFrame:
     return rows
 
 
-def train_mask(hour_start: pd.Series, month: pd.Timestamp) -> pd.Series:
-    """Training rows for a test month: hours before the day before the month starts."""
-    return hour_start < month - pd.Timedelta(days=1)
+def train_mask(hour_start: pd.Series, month: pd.Timestamp, lead_days: int = 1) -> pd.Series:
+    """Training rows for a test month: hours before day 1-k, so every target is known when the
+    month's first forecast is issued (D-k 10:00; k = 1 for the day-ahead)."""
+    return hour_start < month - pd.Timedelta(days=lead_days)
+
+
+def lead_features(lead_days: int) -> list[str]:
+    """The model's signals for a lead: no NESO limits beyond the day ahead (not yet published)."""
+    return ft.FEATURES if lead_days == 1 else NO_LIMIT_FEATURES
 
 
 def _scot_pot(d: pd.DataFrame) -> np.ndarray:
