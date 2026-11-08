@@ -1425,6 +1425,22 @@ function batteryName(b) {
   return f ? `${farmName(b.farm_id)} battery` : b.battery_id;
 }
 
+/** "about 27% more (likely between 0% and 61%, on 3 months we held out)": the relative gain of the forecast battery
+ *  over the no-forecast one, with the day-block bootstrap 95% interval from scorecard.json (#69) when there is one. */
+function batteryGainText(sc, planner) {
+  const h = sc && sc.holdout, cr = h && h.capture_ratio;
+  const f = cr && cr[`forecast/${planner}`], r = cr && cr[`reactive/${planner === "lp_band" ? "lp" : planner}`];
+  if (f == null || !r) return null;
+  const more = f / r - 1;
+  if (more <= 0) return "On the months we held out, our forecast did not help the battery earn more.";
+  const ci = h.forecast_minus_reactive_ci95 && h.forecast_minus_reactive_ci95[planner];
+  const n = (h.months || []).length;
+  const range = ci && ci.length === 2
+    ? ` (likely between ${Math.max(0, Math.round((ci[0] / r) * 100))}% and ${Math.round((ci[1] / r) * 100)}%, on ${n} months we held out)`
+    : ` (on ${n} months we held out)`;
+  return `With our forecast, a battery earns about ${Math.round(more * 100)}% more than the same battery without one${range}.`;
+}
+
 function apLpCeiling() {
   return state.ap.scorecard.results.some((r) => r.strategy === "perfect" && r.dispatcher === "lp");
 }
@@ -1436,13 +1452,9 @@ function renderScorecard() {
   const hf = h && h[`forecast/${apPlannerFor("forecast")}`], hr = h && h[`reactive/${apPlannerFor("reactive")}`];
   const held = hf != null && hr != null;   // the fair headline: months the planning rules never saw
   const whole = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
-  if (held && hr > 0) {
-    const more = hf / hr - 1;
-    $("ap-plain").textContent = more > 0
-      ? `With our forecast, a battery earns about ${Math.round(more * 100)}% more than the same battery without one.`
-      : "On these months our forecast did not help the battery earn more.";
-    $("ap-plain").hidden = false;
-  }
+  const gain = held ? batteryGainText(sc, apPlannerFor("forecast")) : null;
+  $("ap-plain").hidden = !gain;
+  if (gain) $("ap-plain").textContent = gain;
   countUp($("ap-headline"), held ? `${fmtPct(hf)} vs ${fmtPct(hr)}` : whole);
   const period = sc.period ? `${dayFmt.format(new Date(sc.period.start))} – ${dayFmt.format(new Date(new Date(sc.period.end) - 1))}` : "";
   $("ap-headline-sub").textContent = `Share of the best possible earnings a battery makes with our forecast vs with no forecast. ` +
@@ -1863,8 +1875,9 @@ async function fillStorm() {   // the storm day's figures, live from the same AP
   stormFilled = true;
   const end = isoDay(new Date(new Date(`${STORM_DAY}T00:00:00Z`).getTime() + DAY_MS));
   try {
-    const [r, bt] = await Promise.all([api(`/api/reveal/summary?start=${STORM_DAY}&end=${end}`),
-      api(`/api/forecast/backtest?start=${STORM_DAY}&end=${end}`).catch(() => null)]);
+    const [r, bt, sc] = await Promise.all([api(`/api/reveal/summary?start=${STORM_DAY}&end=${end}`),
+      api(`/api/forecast/backtest?start=${STORM_DAY}&end=${end}`).catch(() => null),
+      api("/api/autopilot/scorecard").catch(() => null)]);
     const t = r.totals, cut = t.curtailed_twh * 1e6, pot = r.farms.reduce((a, f) => a + (f.potential_mwh || 0), 0);
     $("storm-twh").textContent = fmtEnergy(cut);
     $("storm-paid").textContent = fmtCompact(Math.abs(t.payments_gbp), "£");
@@ -1882,8 +1895,7 @@ async function fillStorm() {   // the storm day's figures, live from the same AP
       $("about-proof").innerHTML = "";
       $("about-proof").append(el("b", {}, "Did we see the storm coming? "),
         `At 10:00 the day before, our forecast said ${fmtEnergy(pred)} would be wasted on 27 October. ` +
-        `${fmtEnergy(act)} was. On months never used for tuning, a battery run on our forecast earns about a quarter ` +
-        "more than the same battery without one.");
+        `${fmtEnergy(act)} was. ` + (batteryGainText(sc, "lp") || ""));
     }
   } catch (_) { stormFilled = false; }
 }
@@ -1910,7 +1922,7 @@ function initAbout() {
   });
   let seen = false;
   try { seen = localStorage.getItem("ww-about-seen") === "1"; } catch (_) { /* show it */ }
-  if (!seen && !/[?&]notour\b/.test(location.search)) showAbout(true);
+  if (!seen && !/[?&](notour\b|tour=)/.test(location.search)) showAbout(true);   // never over a tour started from the URL
 }
 
 async function boot() {
