@@ -156,6 +156,42 @@ function defaultRange(mode, anchor) {
     new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth() + 1, 1)));
   return clampRange(new Date(Date.UTC(a.getUTCFullYear(), 0, 1)), new Date(Date.UTC(a.getUTCFullYear() + 1, 0, 1)));
 }
+// History's pickers: Year / Month / Week show one dropdown of just those periods in the data (newest first), Day one
+// date box, and All (or a hand-typed range) the From-To range. Weeks are the fixed 7-day blocks from the first day
+// of data (a Monday), the same blocks the Week button and the arrows use, so you only choose which week.
+function weekLabel(s, e) {   // "1–7 Jan 2024", "26 Oct – 1 Nov 2026", "30 Dec 2024 – 5 Jan 2025"
+  const dm = (d) => d.toLocaleString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+  if (s.getUTCFullYear() !== e.getUTCFullYear()) return `${dayFmt.format(s)} – ${dayFmt.format(e)}`;
+  if (s.getUTCMonth() === e.getUTCMonth()) return `${s.getUTCDate()}–${dm(e)} ${e.getUTCFullYear()}`;
+  return `${dm(s)} – ${dm(e)} ${e.getUTCFullYear()}`;
+}
+function periodList(mode, first, end) {   // first = data start (a Monday), end = data end (exclusive); newest first
+  const out = [], so = (periodEnd) => (periodEnd > end.getTime() ? " (so far)" : "");
+  if (mode === "year") {
+    for (let y = first.getUTCFullYear(); y <= new Date(end.getTime() - DAY_MS).getUTCFullYear(); y++) {
+      out.push({ value: isoDay(new Date(Math.max(Date.UTC(y, 0, 1), first.getTime()))), label: `${y}${so(Date.UTC(y + 1, 0, 1))}` });
+    }
+  } else if (mode === "month") {
+    for (let d = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), 1)); d < end;
+      d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) {
+      out.push({ value: isoDay(new Date(Math.max(d.getTime(), first.getTime()))),
+                 label: monthFmt.format(d) + so(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)) });
+    }
+  } else if (mode === "week") {
+    for (let t = first.getTime(); t < end.getTime(); t += 7 * DAY_MS) {
+      const last = new Date(Math.min(t + 7 * DAY_MS, end.getTime()) - DAY_MS);
+      out.push({ value: isoDay(new Date(t)), label: weekLabel(new Date(t), last) + so(t + 7 * DAY_MS) });
+    }
+  }
+  return out.reverse();
+}
+function inferMode(r) {   // a typed range that is exactly one day / week / month / year switches to that picker
+  for (const m of ["day", "week", "month", "year"]) {
+    const d = defaultRange(m, r.start);
+    if (d && d.start.getTime() === r.start.getTime() && d.end.getTime() === r.end.getTime()) return m;
+  }
+  return "custom";
+}
 function shiftedRange(dir) {   // the next/previous period of the same length
   const r = state.range;
   if (!r) return null;
@@ -673,10 +709,23 @@ function syncDateInputs() {
   $("range-end").value = isoDay(new Date(r.end.getTime() - DAY_MS));   // shown inclusive
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode)));
   const fixed = state.mode !== "all";
-  // one day needs one date box, not "30 Dec to 30 Dec"
-  const oneDay = r.end - r.start === DAY_MS;
-  $("range-end").hidden = oneDay;
-  document.querySelector("#tab-reveal .date-sep").hidden = oneDay;
+  // Year / Month / Week: one dropdown of those periods. Day: one date box. All or a typed range: From - To.
+  const picker = { year: "Year", month: "Month", week: "Week" }[state.mode];
+  const sel = $("range-period");
+  sel.hidden = !picker;
+  if (picker) {
+    if (sel.dataset.mode !== state.mode) {   // rebuild only when the kind of period changes
+      clear(sel);
+      for (const o of periodList(state.mode, dataStart(), dataEnd())) sel.append(el("option", { value: o.value }, o.label));
+      sel.dataset.mode = state.mode;
+      sel.setAttribute("aria-label", picker);
+    }
+    sel.value = isoDay(r.start);
+  }
+  const oneDay = r.end - r.start === DAY_MS;   // one day needs one date box, not "30 Dec to 30 Dec"
+  $("range-start").hidden = !!picker;
+  $("range-end").hidden = !!picker || oneDay;
+  document.querySelector("#tab-reveal .date-sep").hidden = !!picker || oneDay;
   $("range-prev").disabled = !fixed || !shiftedRange(-1);
   $("range-next").disabled = !fixed || !shiftedRange(1);
   $("play").disabled = !fixed;
@@ -705,8 +754,7 @@ function setRangeFromInputs() {
   const r = clampRange(s, new Date(e.getTime() + DAY_MS));
   if (!r) return;
   state.range = r;
-  const len = r.end - r.start;
-  state.mode = len === DAY_MS ? "day" : "custom";   // a hand-picked range: ‹ › step by its own length
+  state.mode = inferMode(r);   // exactly a day / week / month / year: that picker; anything else: ‹ › step by its length
   syncDateInputs();
   loadReveal();
 }
@@ -1969,6 +2017,11 @@ async function boot() {
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.addEventListener("click", () => { stopPlay(); setMode(b.dataset.mode); }));
   $("play").addEventListener("click", togglePlay);
   $("range-start").addEventListener("change", () => { stopPlay(); setRangeFromInputs(); });
+  $("range-period").addEventListener("change", (e) => {   // a year / month / week chosen from the dropdown
+    stopPlay();
+    state.range = defaultRange(state.mode, new Date(`${e.target.value}T00:00:00Z`));
+    syncDateInputs(); loadReveal();
+  });
   $("range-end").addEventListener("change", () => { stopPlay(); setRangeFromInputs(); });
   $("range-prev").addEventListener("click", () => { stopPlay(); stepRange(-1); });
   $("range-next").addEventListener("click", () => { stopPlay(); stepRange(1); });

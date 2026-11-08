@@ -95,7 +95,7 @@
     apReplay: () => { if (!state.ap.timer) toggleApReplay(); },
   };
 
-  const D = { storm: "2026-10-27", winter: "2025-02-20", battery: "2026-09-02", monthA: "2026-10-01", monthB: "2026-10-31", weekA: "2026-10-25", weekB: "2026-10-31" };
+  const D = { storm: "2026-10-27", winter: "2025-02-20", battery: "2026-09-02", monthA: "2026-10-01", monthB: "2026-10-31", weekA: "2026-10-26", weekB: "2026-11-01" };
 
   const TOURS = {
     // Tour 1: forecast and automated decisions
