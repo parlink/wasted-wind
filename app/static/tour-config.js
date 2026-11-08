@@ -25,7 +25,7 @@
     targetWaitMs: 4000,           // how long to wait for a step's element before skipping the step
     settleMinMs: 400,             // pause after every action
     settleMaxMs: 6000,            // give up waiting for a load after this
-    busySelector: ".tab.loading:not([hidden])",   // the app's own "still loading" marker
+    busySelector: ".tab.loading:not([hidden]), #tm.loading",   // the app's own "still loading" markers (a tab, and the look-back card)
     scrollContainer: ".panel",    // what scrolls when a target is below the fold
     restore: "reload",            // "reload": leaving the tour reloads the page, so nothing is left changed
   };
