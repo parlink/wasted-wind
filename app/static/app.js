@@ -83,6 +83,14 @@ const DAY_MS = 86400000;
 
 // Reveal's time window: null = everything, else [start, end) in whole UTC days.
 // The All/Year/Month/Week/Day buttons give a default range; the date boxes can set any range.
+// ["2026-08","2026-09","2026-10"] -> "Aug–Oct 2026" (or "Dec 2025 – Feb 2026" across a year)
+function monthSpan(ms) {
+  if (!ms || !ms.length) return "";
+  const d = (m) => new Date(`${m}-01T00:00:00Z`), f = (m, y) => d(m).toLocaleString("en-GB", { month: "short", ...(y ? { year: "numeric" } : {}), timeZone: "UTC" });
+  const a = ms[0], b = ms[ms.length - 1];
+  if (a === b) return f(a, true);
+  return a.slice(0, 4) === b.slice(0, 4) ? `${f(a)}–${f(b, true)}` : `${f(a, true)} – ${f(b, true)}`;
+}
 function dataStart() { return state.days[0]; }
 function dataEnd() { return new Date(state.days[state.days.length - 1].getTime() + DAY_MS); }
 function clampRange(start, end) {
@@ -129,6 +137,9 @@ function windowText() {
   if (r.end - r.start === DAY_MS) return dayFmt.format(r.start);
   if (state.mode === "month" && whole("month") && r.end - r.start < 32 * DAY_MS) return monthFmt.format(r.start);
   if (state.mode === "year" && whole("year")) return String(r.start.getUTCFullYear());
+  if (state.mode === "year" && r.end >= dataEnd() && r.start.getUTCMonth() === 0 && r.start.getUTCDate() === 1) {
+    return `${r.start.getUTCFullYear()} so far (to ${dayFmt.format(last)})`;
+  }
   return `${dayFmt.format(r.start)} – ${dayFmt.format(last)}`;
 }
 
@@ -407,7 +418,11 @@ function renderReveal() {
     (planned <= 0 ? "no output expected"
       : cut === 0 ? `none of the ${fmtEnergy(planned)} the farms could make was wasted: the cables had room`
       : `${fmtPct(cut / planned)} of the ${fmtEnergy(planned)} the farms could have made`);
-  $("t-payments").textContent = fmtCompact(t.payments_gbp, "£");
+  // farms on government price contracts can bid to PAY to switch off when power prices go negative,
+  // so a window's net payment can be below zero: flip the label, never show "£-37k"
+  const farmsPaid = t.payments_gbp < 0;
+  $("t-payments").previousElementSibling.textContent = farmsPaid ? "Farms paid to switch off (net)" : "Paid to farms to switch off";
+  $("t-payments").textContent = fmtCompact(Math.abs(t.payments_gbp), "£");
   $("t-gas").textContent = fmtCompact(t.replacement_gas_gbp, "£");
   $("t-co2").textContent = `${fmtCompact(t.co2_t)} t`;
   $("t-homes").textContent = fmtCompact(homesFor(t.curtailed_twh));
@@ -573,26 +588,32 @@ function syncDateInputs() {
   $("range-end").value = isoDay(new Date(r.end.getTime() - DAY_MS));   // shown inclusive
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode)));
   const fixed = state.mode !== "all";
+  // one day needs one date box, not "30 Dec to 30 Dec"
+  const oneDay = r.end - r.start === DAY_MS;
+  $("range-end").hidden = oneDay;
+  document.querySelector("#tab-reveal .date-sep").hidden = oneDay;
   $("range-prev").disabled = !fixed || !shiftedRange(-1);
   $("range-next").disabled = !fixed || !shiftedRange(1);
   $("play").disabled = !fixed;
 }
 function setMode(mode) {
-  // keep looking at the same moment: the new range is the one containing the old one's start
-  const anchor = state.range ? state.range.start : (state.days.length ? state.days[state.days.length - 1] : null);
-  const fromAll = !state.range;
+  // keep looking at the same moment: the new range is the one containing the old one's LAST day, so
+  // Year -> Month -> Week -> Day narrows onto the most recent part of what you were looking at
+  const anchor = state.range ? new Date(state.range.end.getTime() - DAY_MS)
+    : (state.days.length ? state.days[state.days.length - 1] : null);
   state.mode = mode;
   state.range = anchor ? defaultRange(mode, anchor) : null;
-  // coming from "All", start on the latest *complete* week / month / year, not the few days of the current one
-  const full = { week: 7, month: 28, year: 365 }[mode];
-  if (fromAll && full && state.range && (state.range.end - state.range.start) / DAY_MS < full) {
+  // the data's last week / month is only a few days long: start on the latest complete one instead.
+  // The current year is kept (most of it is in), shown as "so far".
+  const full = { week: 7, month: 28 }[mode];
+  if (full && state.range && state.range.end >= dataEnd() && (state.range.end - state.range.start) / DAY_MS < full) {
     state.range = shiftedRange(-1) || state.range;
   }
   syncDateInputs();
   loadReveal();
 }
 function setRangeFromInputs() {
-  const a = $("range-start").value, b = $("range-end").value;
+  const a = $("range-start").value, b = $("range-end").hidden ? a : $("range-end").value;   // day: one box
   if (!a || !b) return;
   let s = new Date(`${a}T00:00:00Z`), e = new Date(`${b}T00:00:00Z`);
   if (e < s) [s, e] = [e, s];
@@ -1229,7 +1250,7 @@ function holdoutText(sc) {
   const h = sc.holdout && sc.holdout.capture_ratio;
   const f = h && h[`forecast/${apPlannerFor("forecast")}`], r = h && h[`reactive/${apPlannerFor("reactive")}`];
   if (f == null || r == null) return "";
-  return `On months the planning rules were not tuned on (${sc.holdout.months.join(", ")}): ` +
+  return `On months the planning rules were not tuned on (${monthSpan(sc.holdout.months)}): ` +
     `${fmtPct(f)} vs ${fmtPct(r)}.`;
 }
 
@@ -1494,11 +1515,11 @@ function renderMethodBatteries(sc) {
     "only catch real waste and only sell when the cable south has room. Capture ratio = its revenue ÷ the revenue of " +
     (lp ? "the best schedule possible with perfect hindsight (a linear programme, a true ceiling)."
       : "the same rules given perfect knowledge of the day.") +
-    (sc.holdout ? ` The planning rules were tuned on other months; ${sc.holdout.months.join(", ")} are held out.` : "");
+    (sc.holdout ? ` The planning rules were tuned on other months; ${monthSpan(sc.holdout.months)} are held out.` : "");
   const bw = sc.band_weight, hold = sc.holdout && sc.holdout.capture_ratio;
   if (bw && hold && hold["forecast/lp_band"] != null && hold["forecast/lp"] != null) {
     $("method-basis").textContent += ` A third planner plans for waste between the likely value and the high end of the ` +
-      `forecast's range (weight ${bw.chosen}, chosen on ${bw.selected_on.join(", ")}), because the forecast's misses are storms ` +
+      `forecast's range (weight ${bw.chosen}, chosen on ${monthSpan(bw.selected_on)}), because the forecast's misses are storms ` +
       `above its range. On the held-out months it earns ${pct1(hold["forecast/lp_band"])} of the maximum, vs ` +
       `${pct1(hold["forecast/lp"])} for the plain optimiser.`;
   }
