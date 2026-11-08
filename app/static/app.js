@@ -1028,7 +1028,7 @@ function drawSubsea() {   // the new cable as a curve out at sea (indicative rou
   }
   const data = { type: "FeatureCollection", features };
   if (map.getSource("subsea")) { map.getSource("subsea").setData(data); return; }
-  if (!map.loaded()) return;
+  if (!map.isStyleLoaded()) { map.once("idle", drawSubsea); return; }   // never silently drop the line
   map.addSource("subsea", { type: "geojson", data });
   map.addLayer({ id: "subsea", type: "line", source: "subsea",
     paint: { "line-color": C.planned, "line-width": 3, "line-dasharray": [1, 1.2] } });
@@ -1462,8 +1462,7 @@ function windArrowImage() {   // a teal arrow pointing up (north), drawn once
 }
 
 function drawWind() {
-  if (!map || !map.loaded()) return;
-  if (!map.hasImage("wind-arrow")) map.addImage("wind-arrow", windArrowImage(), { pixelRatio: 2 });
+  if (!map) return;
   const feats = [];
   const d = state.wind.on && state.wind.data;
   if (d) {
@@ -1478,6 +1477,11 @@ function drawWind() {
   }
   const data = { type: "FeatureCollection", features: feats };
   if (map.getSource("wind")) { map.getSource("wind").setData(data); return; }
+  // the first draw adds an image and a layer, which needs the style ready. If it's busy (tiles loading after
+  // a date change), draw again once it's idle: an early return here used to leave the arrows blank (found
+  // checking the #58 merge)
+  if (!map.isStyleLoaded()) { map.once("idle", drawWind); return; }
+  if (!map.hasImage("wind-arrow")) map.addImage("wind-arrow", windArrowImage(), { pixelRatio: 2 });
   map.addSource("wind", { type: "geojson", data });
   map.addLayer({ id: "wind", type: "symbol", source: "wind", layout: {
     "icon-image": "wind-arrow", "icon-rotate": ["get", "rot"], "icon-rotation-alignment": "map", "icon-allow-overlap": true,
