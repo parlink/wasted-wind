@@ -1,4 +1,4 @@
-# Wasted Wind
+# Windfall
 
 Reveal, predict, automatically dispatch batteries against, and simulate fixes for Scottish wind curtailment.
 HackTheBurgh XIII, 7–8 November 2026.

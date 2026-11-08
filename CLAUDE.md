@@ -1,4 +1,4 @@
-# Wasted Wind — rules for all agents
+# Windfall — rules for all agents
 Project: reconstruct, forecast, dispatch and simulate Scottish wind curtailment.
 Brief: see docs/BRIEF.md. Data formats and API shapes: docs/CONTRACT.md (never change without a PR).
 
