@@ -4,13 +4,15 @@
 .tour-root {
   /* ---- look: change these ---- */
   --tour-dim: rgba(14, 18, 24, 0.55);          /* how dark the page goes around the spotlight */
-  --tour-accent: #0e9fbf;                      /* spotlight border, progress, active buttons */
+  --tour-accent: #ffffff;                      /* spotlight border: white on the dimmed page */
+  --tour-ink: #1d1d1f;                         /* progress, the Next button: the panel's ink, not a series colour */
+  --tour-ring: rgba(29, 29, 31, 0.65);         /* click ring: dark grey with a white halo, visible on map and panel */
   --tour-spot-radius: 0.7em;
   --tour-spot-border: 0.18em;
-  --tour-card-bg: rgba(255, 255, 255, 0.97);
+  --tour-card-bg: rgba(255, 255, 255, 0.86);   /* the panel's frosted glass */
   --tour-card-ink: #1d1d1f;
   --tour-card-muted: #6b6b70;
-  --tour-card-radius: 1em;
+  --tour-card-radius: 18px;                    /* the panel's --r-lg */
   --tour-card-width: 24em;
   --tour-label-size: 1.12em;
   --tour-z: 2147483000;
@@ -36,22 +38,24 @@
   width: min(var(--tour-card-width), calc(100vw - 2em));
   background: var(--tour-card-bg); color: var(--tour-card-ink);
   border-radius: var(--tour-card-radius); padding: 0.9em 1em 0.8em;
-  box-shadow: 0 0.6em 2.4em rgba(0, 0, 0, 0.32), 0 0.1em 0.3em rgba(0, 0, 0, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  -webkit-backdrop-filter: blur(28px) saturate(180%); backdrop-filter: blur(28px) saturate(180%);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.22), 0 1px 3px rgba(0, 0, 0, 0.08);
   transition: left 0.3s ease, top 0.3s ease;
 }
 .tour-top { display: flex; align-items: center; justify-content: space-between; gap: 0.6em; margin-bottom: 0.5em; }
 .tour-count { font-size: 0.8em; font-weight: 600; color: var(--tour-card-muted); font-variant-numeric: tabular-nums; }
-.tour-modes { display: inline-flex; background: rgba(118, 118, 128, 0.14); border-radius: 999px; padding: 0.15em; }
+.tour-modes { display: inline-flex; background: rgba(118, 118, 128, 0.12); border-radius: 10px; padding: 2px; gap: 2px; }
 .tour-mode-btn {
   font: inherit; font-size: 0.78em; font-weight: 600; border: 0; background: transparent; color: var(--tour-card-muted);
-  padding: 0.25em 0.8em; border-radius: 999px; cursor: pointer;
+  padding: 0.25em 0.8em; border-radius: 8px; cursor: pointer;
 }
 .tour-mode-btn[aria-pressed="true"] { background: #fff; color: var(--tour-card-ink); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18); }
 .tour-x { font: inherit; font-size: 0.9em; border: 0; background: transparent; color: var(--tour-card-muted); cursor: pointer; padding: 0.2em 0.4em; border-radius: 0.4em; }
 .tour-x:hover { background: rgba(118, 118, 128, 0.14); }
 .tour-label { margin: 0 0 0.7em; font-size: var(--tour-label-size); line-height: 1.35; font-weight: 600; }
 .tour-bar { height: 0.25em; border-radius: 999px; background: rgba(118, 118, 128, 0.18); overflow: hidden; margin-bottom: 0.7em; }
-.tour-bar-fill { display: block; height: 100%; background: var(--tour-accent); border-radius: 999px; transition: width 0.3s ease; }
+.tour-bar-fill { display: block; height: 100%; background: var(--tour-ink); border-radius: 999px; transition: width 0.3s ease; }
 .tour-nav { display: flex; justify-content: flex-end; gap: 0.4em; }
 .tour-nav-btn {
   font: inherit; font-size: 1.15em; line-height: 1; min-width: 2.2em; padding: 0.3em 0.6em; border: 0; border-radius: 0.6em;
@@ -59,12 +63,13 @@
 }
 .tour-nav-btn:hover:not(:disabled) { background: rgba(118, 118, 128, 0.26); }
 .tour-nav-btn:disabled { opacity: 0.35; cursor: default; }
-.tour-nav-btn:last-child { background: var(--tour-accent); color: #fff; }
+.tour-nav-btn:last-child { background: var(--tour-ink); color: #fff; }
+.tour-nav-btn:last-child:hover:not(:disabled) { background: #3a3a3c; }
 
 /* a ring where the tour clicks, so the audience sees what was pressed */
 .tour-ripple {
   position: fixed; width: 2.2em; height: 2.2em; margin: -1.1em 0 0 -1.1em; border-radius: 50%; pointer-events: none;
-  border: 0.2em solid var(--tour-accent); animation: tour-ripple 0.8s ease-out forwards;
+  border: 0.2em solid var(--tour-ring); box-shadow: 0 0 0 0.12em rgba(255, 255, 255, 0.9); animation: tour-ripple 0.8s ease-out forwards;
 }
 @keyframes tour-ripple { from { transform: scale(0.3); opacity: 0.95; } to { transform: scale(1.6); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
