@@ -92,3 +92,49 @@ def test_farm_battery_runs_with_every_forecast_quality(inp, base, quality):
     r = simulate({"batteries": [battery_at(inp, top)], "forecast_quality": quality})
     assert r["batteries"][0]["captured_curtailment_mwh"] >= 0
     assert all(f["curtailed_mwh"] >= -1e-9 for f in r["farms"])
+
+
+# ---------- #47 review: several batteries, mixed sites, other levers ----------
+
+def _grid_north(bid="g"):
+    return {"battery_id": bid, "lat": 57.5, "lon": -4.2, "zone": "north_scotland", "power_mw": 150,
+            "energy_mwh": 300, "efficiency": 0.88, "dispatcher": "rule", "site": "grid"}
+
+
+def _mixes(inp, base):
+    order = farms_by_waste(base)
+    top = order[0]
+    other_north = next(f for f in order[1:] if inp.north[np.flatnonzero(inp.farm == f)[0]]
+                       == inp.north[np.flatnonzero(inp.farm == top)[0]])
+    farm_a, farm_b = battery_at(inp, top), {**battery_at(inp, top), "battery_id": "b2"}
+    return {
+        "grid then farm": [_grid_north(), farm_a],
+        "farm then grid": [farm_a, _grid_north()],
+        "two sharing a farm": [farm_a, farm_b],
+        "two farms, one zone": [farm_a, battery_at(inp, other_north)],
+    }
+
+
+@pytest.mark.parametrize("mix", ["grid then farm", "farm then grid", "two sharing a farm", "two farms, one zone"])
+@pytest.mark.parametrize("extra", [{}, {"subsea_link": {"zone": "north_scotland", "gw": 0.5, "availability": 1.0}},
+                                   {"demand_growth": {"north_scotland": {"data_centres_gw": 0.3}}}])
+def test_many_batteries_conserve_energy_and_rows(inp, base, mix, extra):
+    bats = _mixes(inp, base)[mix]
+    without = simulate(extra)
+    r = simulate({**extra, "batteries": bats})
+    captured = sum(b["captured_curtailment_mwh"] for b in r["batteries"])
+    removed = (without["scenario"]["curtailed_twh"] - r["scenario"]["curtailed_twh"]) * 1e6
+    assert removed == pytest.approx(captured, rel=1e-6, abs=1e-3)
+    # per-unit waste adds up to the zone waste in every half hour
+    core = engine.run_core(inp, engine.with_defaults({**extra, "batteries": bats}))
+    np.testing.assert_allclose(core["cut_mw"].sum(axis=1), core["ex4"] + core["ex6"], atol=1e-6)
+    assert (core["cut_mw"] >= -1e-9).all() and (core["cut_mw"] <= core["pot"] + 1e-6).all()
+
+
+def test_two_batteries_at_one_farm_take_it_down_together(inp, base):
+    top = farms_by_waste(base)[0]
+    a, b = battery_at(inp, top), {**battery_at(inp, top), "battery_id": "b2"}
+    r = simulate({"batteries": [a, b]})
+    captured = sum(x["captured_curtailment_mwh"] for x in r["batteries"])
+    assert farm_waste(base, [top]) - farm_waste(r, [top]) == pytest.approx(captured, rel=1e-6, abs=1e-3)
+    assert farm_waste(r, [top]) >= -1e-6

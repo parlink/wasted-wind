@@ -293,10 +293,13 @@ def _km(lat1, lon1, lat2, lon2):
 def farm_units(inp: Inputs, battery: dict) -> np.ndarray:
     """Units a battery sited at a wind farm shares a connection with: every unit of every farm within
     radius_km in the battery's own zone, else the nearest farm in that zone. Empty for a grid battery."""
-    if battery.get("site", "grid") != "farm" or inp.unit_lat is None:
+    if battery.get("site", "grid") != "farm":
         return np.zeros(len(inp.bmu), bool)
+    if inp.unit_lat is None or inp.unit_lon is None:
+        raise ValueError("a battery sited at a farm needs farm coordinates (lat/lon in farms.csv)")
     in_zone = inp.north if battery["zone"] == "north_scotland" else ~inp.north
-    d = np.where(in_zone, _km(battery["lat"], battery["lon"], inp.unit_lat, inp.unit_lon), np.inf)
+    d = _km(battery["lat"], battery["lon"], inp.unit_lat, inp.unit_lon)
+    d = np.where(in_zone & np.isfinite(d), d, np.inf)
     near = d <= float(battery.get("radius_km") or FARM_RADIUS_KM)
     if not near.any() and np.isfinite(d).any():
         near = inp.farm == inp.farm[int(np.argmin(d))]   # nearest farm, all its units
@@ -332,6 +335,8 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
     sig_n, sig_s, fb_n, fb_s = planning_signals(inp, sc["forecast_quality"], waste_n, waste_s)
 
     cut0 = (phys or {}).get("cut0")            # (T, U) would-be waste per unit, for batteries sited at a farm
+    c4, c6 = (phys or {}).get("cut0_b4"), (phys or {}).get("cut0_b6")   # its B4 and B6 parts
+    cut_after = np.zeros_like(cut0) if cut0 is not None else None       # what is left after every battery charged
     plans = []
     for b in bats:
         north = b["zone"] == "north_scotland"
@@ -353,14 +358,33 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
                 p["fallback"] = int(np.all(np.isnan(fc), axis=0).sum()) if fc else T
         plans.append(p)
 
+    everyone = np.ones(len(inp.bmu), bool)
+
+    def draw(c, units, b4_first):
+        """Use up c MW of the units' remaining waste: B4 part first for a North battery (charging cuts the
+        North surplus, so the B4 overflow goes first), then B6; only B6 for a South battery, then anything left
+        (the physics guarantees the total is there; the split between parts is an accounting choice)."""
+        pools = [(rem4, units), (rem6, units)] if b4_first else [(rem6, units)]
+        pools += [(rem4, units), (rem6, everyone), (rem4, everyone)]
+        for pool, m in pools:
+            if c <= 1e-12:
+                break
+            w = pool[m]
+            tot = float(w.sum())
+            if tot <= 0:
+                continue
+            take = min(c, tot)
+            pool[m] = np.maximum(w - take * w / tot, 0.0)
+            c -= take
+
     def charge(b, p, want, cap):
         room = (b["energy_mwh"] - p["soc"]) / (H * b["efficiency"])
-        if p["units"].any() and cut0 is not None:   # only its own farms' remaining waste this half hour
-            cap = min(cap, float(rem[p["units"]].sum()))
+        farm = cut0 is not None and p["units"].any()
+        if farm:   # a farm battery: only its own farms' remaining waste this half hour
+            cap = min(cap, float(rem4[p["units"]].sum() + rem6[p["units"]].sum()))
         c = max(0.0, min(want, b["power_mw"], room, cap))
-        if c > 0 and p["units"].any() and cut0 is not None:   # use up those farms' waste, in proportion
-            w = rem[p["units"]]
-            rem[p["units"]] = np.maximum(w - c * w / max(float(w.sum()), 1e-12), 0.0)
+        if c > 0 and cut0 is not None:   # every battery's charge comes out of somebody's waste
+            draw(c, p["units"] if farm else (inp.north if p["north"] else everyone), p["north"])
         return c
 
     net_n, net_s = np.zeros(T), np.zeros(T)
@@ -372,7 +396,8 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
         day_plans = [planner_for(b)[0](b, p["sig"][sl], price_exp[d], p["head"][sl], p["soc"]) for b, p in zip(bats, plans)]
         for i in range(d * 48, d * 48 + 48):
             j = i - d * 48
-            rem = cut0[i].copy() if cut0 is not None else None   # farm waste not yet caught this half hour
+            if cut0 is not None:   # each unit's waste not yet caught this half hour, by bottleneck
+                rem4, rem6 = c4[i].copy(), c6[i].copy()
             # charging from would-be waste: North batteries first (B4 and B6 waste), then South
             s_n = pot_n[i] + res_n[i]
             room_n = _north_room(ex4_0[i], ex6_0[i], flow4_0[i], lk_n)
@@ -406,8 +431,12 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
                     if p["north"]:
                         flow4 += dmw
                 p["soc_mwh"][i] = p["soc"]
+            if cut0 is not None:
+                cut_after[i] = rem4 + rem6
             net_n[i] = -cn + sum(p["discharge"][i] for p in plans if p["north"])
             net_s[i] = -cs + sum(p["discharge"][i] for p in plans if not p["north"])
+    if cut_after is not None:
+        phys["cut_after"] = cut_after
     return net_n, net_s, plans
 
 
@@ -427,7 +456,9 @@ def run_core(inp: Inputs, sc: dict) -> dict:
     plans = []
     hist_mw = inp.hist_curtailed_mwh / H
     if any(b.get("site", "grid") == "farm" for b in sc["batteries"]):
-        phys["cut0"] = _cut(pot, ex4, ex6, hist_mw, inp.north)   # who would be switched off without batteries
+        # who would be switched off without batteries, split by bottleneck
+        phys["cut0_b4"], phys["cut0_b6"] = _cut(pot, ex4, ex6, hist_mw, inp.north, split=True)
+        phys["cut0"] = phys["cut0_b4"] + phys["cut0_b6"]
     if sc["batteries"]:
         net_n, net_s, plans = _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4, ex6, flow4, flow6, phys)
         ex4, ex6, flow4, flow6 = _boundaries(pot_n, pot_s, res_n, res_s, l4, l6, net_n, net_s, lk_n, lk_s)
@@ -436,48 +467,24 @@ def run_core(inp: Inputs, sc: dict) -> dict:
 
     # who gets switched off: B4 waste from North units, then B6 waste from all Scottish units,
     # following each half hour's historical pattern, else cheapest first (see allocate)
-    cut = _cut(pot, ex4, ex6, hist_mw, inp.north)
-    if "cut0" in phys:
-        cut = _credit_farm_batteries(cut, phys["cut0"], pot, plans, inp.north)
+    if "cut_after" in phys:
+        # each battery's charge was taken out of specific units' waste (farm batteries: their own farms), so
+        # the per-unit waste is simply what is left; row totals equal ex4 + ex6 (tested)
+        cut = phys["cut_after"]
+    else:
+        cut = _cut(pot, ex4, ex6, hist_mw, inp.north)
     return {"pot": pot, "cut_mw": cut, "ex4": ex4, "ex6": ex6, "flow4": flow4, "flow6": flow6, "plans": plans}
 
 
-def _cut(pot, ex4, ex6, hist_mw, north):
+def _cut(pot, ex4, ex6, hist_mw, north, split=False):
     """Who gets switched off: B4 waste from North units, then B6 waste from all Scottish units,
-    following each half hour's historical pattern, else cheapest first (see allocate)."""
-    cut = np.zeros_like(pot)
-    cut[:, north] = allocate(pot[:, north], ex4, hist_mw[:, north])
-    cut += allocate(pot - cut, ex6, np.maximum(hist_mw - cut, 0.0))
-    return cut
+    following each half hour's historical pattern, else cheapest first (see allocate).
+    split=True returns the (B4 part, B6 part) per unit instead of their sum."""
+    b4 = np.zeros_like(pot)
+    b4[:, north] = allocate(pot[:, north], ex4, hist_mw[:, north])
+    b6 = allocate(pot - b4, ex6, np.maximum(hist_mw - b4, 0.0))
+    return (b4, b6) if split else b4 + b6
 
-
-def _credit_farm_batteries(cut, cut0, pot, plans, north):
-    """A battery sited at a farm removes *that farm's* waste. The zone totals already fall by what it stored;
-    here the per-unit split is moved so the reduction lands on its own farms (row totals are unchanged).
-    Each farm battery's units get cut0 minus the battery's charge (shared in proportion to cut0); the
-    difference from the zone-wide allocation is spread over the battery's zone (North units for a North
-    battery, all Scottish units for a South one), in proportion to their waste or their spare output."""
-    cut = cut.copy()
-    for p in plans:
-        u = p.get("units")
-        if u is None or not u.any():
-            continue
-        group = (north if p["north"] else np.ones_like(north)) & ~u
-        for t in np.flatnonzero(p["charge"] > 0):
-            w0 = cut0[t, u]
-            want = np.maximum(w0 - p["charge"][t] * w0 / max(float(w0.sum()), 1e-12), 0.0)
-            shift = float(cut[t, u].sum() - want.sum())   # >0: the others must take more waste
-            cut[t, u] = want
-            if abs(shift) < 1e-9 or not group.any():
-                continue
-            if shift > 0:
-                room = np.maximum(pot[t, group] - cut[t, group], 0.0)
-                add = room * min(1.0, shift / max(float(room.sum()), 1e-12))
-            else:
-                have = cut[t, group]
-                add = -have * min(1.0, -shift / max(float(have.sum()), 1e-12))
-            cut[t, group] += add
-    return cut
 
 
 # ---------- results ----------
