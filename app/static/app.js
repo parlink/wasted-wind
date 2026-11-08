@@ -1203,7 +1203,7 @@ function renderSim() {
     const tb = el("tbody");
     for (const x of r.batteries) {
       tb.append(el("tr", {}, el("td", { title: x.site === "farm" ? `At ${(x.farm_ids || []).map(farmName).join(", ")}` : "On the grid" },
-        x.battery_id, el("div", { class: "note", style: { margin: "0" } }, x.site === "farm" ? `at ${(x.farm_ids || []).map(farmName).join(", ")}` : "on the grid")),
+        x.battery_id.replace(/^battery_(\d+)$/, "Battery $1"), el("div", { class: "note", style: { margin: "0" } }, x.site === "farm" ? `at ${(x.farm_ids || []).map(farmName).join(", ")}` : "on the grid")),
         el("td", { class: "num" }, fmtEnergy(x.captured_curtailment_mwh)),
         el("td", { class: "num" }, fmtCompact(x.revenue_gbp, "£")), el("td", { class: "num" }, nf(1).format(x.cycles))));
     }
