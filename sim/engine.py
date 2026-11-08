@@ -95,6 +95,8 @@ class Inputs:
     unit_lat: np.ndarray | None = None   # (U,) farm centroid of each unit, for batteries sited at a farm
     unit_lon: np.ndarray | None = None
     fc_farm: dict = field(default_factory=dict)   # farm_id -> (T,) day-ahead forecast waste, MWh per half hour
+    temp_n: np.ndarray | None = None   # (T,) zone temperature, deg C, NaN where unknown (heat-pump lever)
+    temp_s: np.ndarray | None = None
 
     @staticmethod
     def synthetic(rng, T: int, U: int) -> "Inputs":
@@ -198,6 +200,10 @@ def _load(signature: tuple, source: str) -> Inputs:
         ff.index = pd.DatetimeIndex(ff.index)
         ff = ff.reindex(periods.floor("h")) / 2
         inp.fc_farm = {c: ff[c].to_numpy(float) for c in ff.columns}
+    if "temperature_2m_c" in resid.columns:   # optional (#45): heat pumps follow real cold days
+        for z, attr in (("north_scotland", "temp_n"), ("south_scotland", "temp_s")):
+            t = resid[resid["zone"] == z].set_index("period_start")["temperature_2m_c"].reindex(periods)
+            setattr(inp, attr, t.to_numpy(float))
     inp.dropped_curtailed_mwh = float(curt.loc[curt["bmu_id"].isin(dropped), "curtailed_mwh_a"].sum())
     return inp
 
@@ -448,8 +454,8 @@ def run_core(inp: Inputs, sc: dict) -> dict:
     pot_n, pot_s = pot[:, inp.north].sum(axis=1), pot[:, ~inp.north].sum(axis=1)
     # lever 6: new demand in a zone uses its own wind first, so it lowers the zone's residual
     dg = sc.get("demand_growth") or {}
-    res_n = inp.res_n - levers.demand_growth_mw(inp.periods, dg.get("north_scotland"))
-    res_s = inp.res_s - levers.demand_growth_mw(inp.periods, dg.get("south_scotland"))
+    res_n = inp.res_n - levers.demand_growth_mw(inp.periods, dg.get("north_scotland"), inp.temp_n)
+    res_s = inp.res_s - levers.demand_growth_mw(inp.periods, dg.get("south_scotland"), inp.temp_s)
     lk_n, lk_s = levers.subsea_link_mw(sc.get("subsea_link"))   # lever 3
     phys = dict(res_n=res_n, res_s=res_s, lk_n=lk_n, lk_s=lk_s)
     ex4, ex6, flow4, flow6 = _boundaries(pot_n, pot_s, res_n, res_s, l4, l6, lk_n=lk_n, lk_s=lk_s)

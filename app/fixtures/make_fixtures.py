@@ -127,6 +127,8 @@ def simulate_history(rng, farms: pd.DataFrame, n_days: int):
         "wind_delivered_mwh": np.r_[(pot[north] - curt[north]).sum(axis=1), (pot[south] - curt[south]).sum(axis=1)] * 0.5,
         "market_price_gbp_mwh": np.r_[price, price],
         "gb_demand_mw": np.r_[demand, demand],
+        # fake town temperature: a November day-night cycle, the north a degree colder
+        "temperature_2m_c": np.r_[5.0 - 1.0 + 3 * day_shape + ar1(rng, n, 0.97, 0.4), 5.0 + 3 * day_shape + ar1(rng, n, 0.97, 0.4)],
     })
     return periods, wind, pot, curt, zones
 
@@ -165,7 +167,7 @@ def residual_table(zones: pd.DataFrame) -> pd.DataFrame:
     z = zones.copy()
     z["residual_method"] = np.where(z["excess_mw"] > 1e-6, "binding", "flow_estimate")
     z["boundary"] = z["zone"].map(contract.BOUNDARY_OF_ZONE)
-    return z[contract.RESIDUAL_COLUMNS].sort_values(["zone", "period_start"]).reset_index(drop=True)
+    return z[contract.RESIDUAL_COLUMNS + contract.RESIDUAL_OPTIONAL].sort_values(["zone", "period_start"]).reset_index(drop=True)
 
 
 def forecast_table(rng, pot, curt) -> pd.DataFrame:
@@ -334,10 +336,14 @@ def main():
     fc = forecast_table(rng, pot, curt)
     sched = schedules_table(curt, zones, fc)
     card = scorecard(sched)
+    # live mode has run through the first 9 hours of the live day: those half hours were executed
+    ex = sched[(sched["strategy"] == "forecast") & (sched["period_start"] >= LIVE_DAY)
+               & (sched["period_start"] < LIVE_DAY + pd.Timedelta(hours=9))].copy()
+    ex[["captured_curtailment_mwh", "revenue_gbp"]] = ex[["captured_curtailment_mwh", "revenue_gbp"]].fillna(0.0)
 
     farms.to_csv(OUT / "farms.csv", index=False)
     for name, df in [("curtailment.parquet", curtail), ("residual.parquet", resid),
-                     ("forecast.parquet", fc), ("schedules.parquet", sched)]:
+                     ("forecast.parquet", fc), ("schedules.parquet", sched), ("live_executed.parquet", ex)]:
         df.to_parquet(OUT / name, index=False)
     (OUT / "model_metrics.json").write_text(json.dumps(model_metrics(fc), indent=2))
     (OUT / "scorecard.json").write_text(json.dumps(card, indent=2))

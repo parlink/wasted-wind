@@ -5,6 +5,7 @@ Sources (field names confirmed against docs/samples/):
   gb         Elexon MID (market index), demand outturn, NDF     -> data/raw/elexon/<DS>/<YYYY-MM>.parquet
   neso       NESO day-ahead constraint limits/flows, weekly OTF -> data/raw/neso/*.csv
   openmeteo  Archive (actual) + Previous Runs (as forecast) at each farm in reference/farms.csv
+  towns      Archive temperature at the towns in reference/towns.csv -> data/raw/openmeteo/archive_towns/
                                                                 -> data/raw/openmeteo/<api>/<farm_id>_<YYYY>.parquet
 
 Caching rules (see tests/test_fetch.py):
@@ -255,8 +256,9 @@ def fetch_gb(ds: str, start: datetime, end: datetime) -> str:
     return f"{len(df)} rows"
 
 
-def fetch_openmeteo(api: str, farm_id: str, lat: float, lon: float, first: date, last: date) -> str:
-    out = RAW_ROOT / "openmeteo" / api / f"{farm_id}_{first.year}.parquet"
+def fetch_openmeteo(api: str, farm_id: str, lat: float, lon: float, first: date, last: date,
+                    out_dir: str | None = None) -> str:
+    out = RAW_ROOT / "openmeteo" / (out_dir or api) / f"{farm_id}_{first.year}.parquet"
     window_end = datetime(last.year, last.month, last.day, tzinfo=timezone.utc) + timedelta(days=1)
     final = is_final(window_end, datetime.now(timezone.utc))
     if final and out.exists():
@@ -307,7 +309,7 @@ def run_jobs(label: str, fn, jobs: list[tuple], workers: int) -> int:
 
 def main(argv=None):
     p = argparse.ArgumentParser()
-    p.add_argument("--sources", nargs="+", default=["bmu", "gb", "neso", "openmeteo"])
+    p.add_argument("--sources", nargs="+", default=["bmu", "gb", "neso", "openmeteo", "towns"])
     p.add_argument("--start", default="2024-01-01")
     p.add_argument("--end", default=None, help="exclusive; default = start of today UTC")
     p.add_argument("--datasets", nargs="+", default=BMU_DATASETS, help="for --sources bmu")
@@ -343,6 +345,13 @@ def main(argv=None):
         jobs = [(api, f.farm_id, f.lat, f.lon, y0, y1) for api in OPENMETEO
                 for f in farms.itertuples() for y0, y1 in year_windows(start.date(), last_day)]
         failed += run_jobs("openmeteo", fetch_openmeteo, jobs, workers=2)
+
+    if "towns" in a.sources:      # population centres for the heat-pump temperature (residual.py)
+        towns = pd.read_csv(ROOT / "reference" / "towns.csv")
+        last_day = (end - timedelta(days=1)).date()
+        jobs = [("archive", tw.town, tw.lat, tw.lon, y0, y1, "archive_towns") for tw in towns.itertuples()
+                for y0, y1 in year_windows(start.date(), last_day)]
+        failed += run_jobs("towns", fetch_openmeteo, jobs, workers=2)
 
     if failed:
         raise SystemExit(f"{failed} downloads failed; rerun to retry them")

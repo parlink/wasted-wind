@@ -181,3 +181,22 @@ def test_north_room_caps_b6_relief_at_the_b4_flow_when_there_is_a_link():
     assert _north_room(0.0, 500.0, 0.0, 1000.0) == 0.0        # everything goes down the link: nothing to relieve
     assert _north_room(100.0, 500.0, 200.0, 1000.0) == 300.0  # B4 overflow + only the flow that crosses B4
     assert _north_room(100.0, 500.0, 0.0, 0.0) == 600.0       # no link: unchanged from before
+
+
+def test_heat_pumps_follow_the_real_temperature():
+    """#45: on a cold spell heat pumps draw more than the monthly average says; missing values fall back."""
+    temp = np.full(len(YEAR), 8.0)
+    cold = (YEAR.month == 3) & (YEAR.day <= 7)
+    temp[cold] = -5.0
+    mw = levers.demand_growth_mw(YEAR, {"heat_pumps_gw": 1.0}, temp)
+    assert mw.mean() == pytest.approx(1000.0, rel=1e-9)          # still averages to the GW asked for
+    assert mw[cold].mean() > 2 * mw[(YEAR.month == 3) & (YEAR.day > 7)].mean()
+    gaps = np.full(len(YEAR), np.nan)
+    assert np.allclose(levers.demand_growth_mw(YEAR, {"heat_pumps_gw": 1.0}, gaps),
+                       levers.demand_growth_mw(YEAR, {"heat_pumps_gw": 1.0}))   # all missing = monthly table
+
+
+def test_engine_reads_the_fixture_temperature():
+    from sim import engine
+    inp = engine.load_inputs()
+    assert inp.temp_n is not None and np.isfinite(inp.temp_n).mean() > 0.9

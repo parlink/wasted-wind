@@ -3,7 +3,7 @@
 "use strict";
 
 const C = {
-  planned: "#2a78d6", waste: "#eb6834", wasteWash: "rgba(235,104,52,0.22)", neutral: "#898781",
+  planned: "#0e9fbf", waste: "#c81e6a", wasteWash: "rgba(200,30,106,0.18)", neutral: "#898781",
   grid: "#e1e0d9", axis: "#c3c2b7", ink: "#0b0b0b", ink2: "#52514e", muted: "#898781", critical: "#d03b3b",
   surface: "#fcfcfb", rampZero: "#b8b6ae",
 };
@@ -228,6 +228,7 @@ async function initMap() {
   const padMap = () => map.setPadding({ top: 0, bottom: 0, left: 0, right: window.innerWidth > 820 ? $("panel").offsetWidth + 24 : 0 });
   padMap(); window.addEventListener("resize", padMap);
   map.on("zoom", syncMarkerScale); syncMarkerScale();
+  initWind();
   await new Promise((res) => (map.loaded() ? res() : map.once("load", res)));
 
   map.addSource("boundaries", { type: "geojson", data: boundaryGeoJSON() });
@@ -349,7 +350,7 @@ function updateMap() {
   map.getSource("farms").setData({ type: "FeatureCollection", features });
   map.setPaintProperty("farms", "circle-radius", zoomScaled(["get", "r"]));
   map.setPaintProperty("farms", "circle-color", predict || simulate ? C.waste
-    : ["interpolate", ["linear"], ["get", "share"], 0, C.rampZero, 0.1, "#f2a57a", 0.25, C.waste, 0.5, "#b8461a"]);
+    : ["interpolate", ["linear"], ["get", "share"], 0, C.rampZero, 0.1, "#e58ab0", 0.25, C.waste, 0.5, "#8a0f45"]);
   map.setPaintProperty("farms", "circle-stroke-color",
     ["case", ["==", ["get", "farm_id"], state.farm || ""], C.ink, C.surface]);
   map.setPaintProperty("farms", "circle-stroke-width",
@@ -390,6 +391,7 @@ async function loadReveal() {
     noteSource("wind farm waste", reveal.meta);
     renderReveal();
     updateMap();
+    updateWind();
     if (state.farm) await loadFarmDetail();
   } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
 }
@@ -554,7 +556,7 @@ function selectFarm(id) {
     loadFarmDetail().catch(showError);
     if (state.farm) $("farm-detail").scrollIntoView({ behavior: "smooth", block: "start" });
   } else if (state.tab === "predict" && state.tomorrow) {
-    renderPredict();
+    renderPredict(); if (tmInit && state.tm.date) renderTimeMachine();
   }
 }
 
@@ -635,6 +637,8 @@ async function loadPredict() {
     $("pred-fake").hidden = state.tomorrow.meta.source !== "fixtures";
     renderPredict();
     updateMap();
+    updateWind();
+    loadTimeMachine().catch(showError);
   } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
 }
 
@@ -730,6 +734,99 @@ async function loadBacktest() {
     { label: "actual", data: s.map((p) => p.actual_mwh), borderColor: C.planned },
     { label: "forecast", data: s.map((p) => p.pred_mwh), borderColor: C.waste },
   ], { yLabel: "MWh per day" });
+}
+
+// ---------- Look back: the forecast as issued, what happened, and the batteries, for one past day ----------
+
+state.tm = { date: null, range: null, storm: null };
+let tmInit = false;
+
+async function loadTimeMachine() {
+  if (!tmInit) {
+    tmInit = true;
+    $("tm-date").addEventListener("change", (e) => { if (e.target.value) { state.tm.date = e.target.value; renderTimeMachine(); } });
+    $("tm-prev").addEventListener("click", () => shiftTm(-1));
+    $("tm-next").addEventListener("click", () => shiftTm(1));
+    $("tm-storm").addEventListener("click", () => { if (state.tm.storm) { state.tm.date = state.tm.storm; renderTimeMachine(); } });
+    // the days with an honest day-ahead forecast = the backtest; find them and the biggest day once
+    const bt = await api("/api/forecast/backtest");
+    const daily = dailySums(bt.series.map((p) => ({ period_start: p.hour_start, actual_mwh: p.actual_mwh })), ["actual_mwh"]);
+    const days = [...daily.keys()].sort();
+    if (!days.length) { $("tm-note").textContent = "No backtest forecasts in this data."; return; }
+    state.tm.range = { first: days[0], last: days[days.length - 1] };
+    state.tm.storm = days.reduce((a, d) => ((daily.get(d).actual_mwh || 0) > (daily.get(a).actual_mwh || 0) ? d : a), days[0]);
+    state.tm.date = state.tm.storm;
+    $("tm-date").min = state.tm.range.first; $("tm-date").max = state.tm.range.last;
+  }
+  if (state.tm.date) await renderTimeMachine();
+}
+
+function shiftTm(delta) {
+  if (!state.tm.date || !state.tm.range) return;
+  const d = isoDay(new Date(new Date(`${state.tm.date}T00:00:00Z`).getTime() + delta * DAY_MS));
+  if (d < state.tm.range.first || d > state.tm.range.last) return;
+  state.tm.date = d; renderTimeMachine();
+}
+
+async function renderTimeMachine() {
+  const day = state.tm.date, next = isoDay(new Date(new Date(`${day}T00:00:00Z`).getTime() + DAY_MS));
+  $("tm-date").value = day;
+  $("tm-prev").disabled = day <= state.tm.range.first; $("tm-next").disabled = day >= state.tm.range.last;
+  const box = $("tm"); box.classList.add("loading");
+  try {
+    const farm = state.farm ? `&farm_id=${encodeURIComponent(state.farm)}` : "";
+    const [bt, ...plans] = await Promise.all([
+      api(`/api/forecast/backtest?start=${day}&end=${next}${farm}`),
+      ...["forecast", "reactive", "perfect"].map((s) => api(`/api/autopilot/schedule?date=${day}&strategy=${s}`).catch(() => null)),
+    ]);
+    if (state.tm.date !== day) return;   // the user moved on meanwhile
+    const s = bt.series;
+    const pred = s.reduce((a, p) => a + (p.pred_mwh || 0), 0), act = s.reduce((a, p) => a + (p.actual_mwh || 0), 0);
+    $("tm-pred").textContent = fmtEnergy(pred);
+    $("tm-actual").textContent = fmtEnergy(act);
+    $("tm-err").textContent = act > 0.5 ? `forecast was ${fmtPct(Math.abs(pred - act) / act)} ${pred >= act ? "high" : "low"}` : "";
+    legend($("tm-legend"), [{ label: "Really wasted", color: C.planned, kind: "line" },
+      { label: "Our forecast, made the day before", color: C.waste, kind: "line" },
+      { label: "Simple windy-day rule", color: C.neutral, kind: "line" }]);
+    lineChart("tm-chart", s.map((p) => hourFmt.format(new Date(p.hour_start))), [
+      { label: "actual", data: s.map((p) => p.actual_mwh), borderColor: C.planned },
+      { label: "forecast", data: s.map((p) => p.pred_mwh), borderColor: C.waste },
+      { label: "windy-day rule", data: s.map((p) => p.wind_rule_mwh), borderColor: C.neutral, borderDash: [4, 3] },
+    ], { yLabel: "MWh per hour" });
+
+    const t = clear($("tm-batteries"));
+    t.append(el("thead", {}, el("tr", {}, el("th", {}, "Batteries planned with"), el("th", { class: "num" }, "Wasted wind stored"),
+      el("th", { class: "num" }, "Earned"))));
+    const tb = el("tbody");
+    const names = { forecast: "Our forecast", reactive: "No forecast", perfect: "Knowing the future" };
+    ["forecast", "reactive", "perfect"].forEach((k, i) => {
+      const p = plans[i];
+      if (!p || !p.batteries.length) return;
+      const steps = p.batteries.flatMap((b) => b.steps);
+      const stored = steps.reduce((a, x) => a + (x.captured_curtailment_mwh || 0), 0);
+      const earned = steps.reduce((a, x) => a + (x.revenue_gbp || 0), 0);
+      tb.append(el("tr", { class: k === "forecast" ? "ours" : "" }, el("td", {}, names[k]),
+        el("td", { class: "num" }, fmtEnergy(stored)), el("td", { class: "num" }, fmtCompact(earned, "£"))));
+    });
+    t.append(tb);
+    // why: the dispatcher's most common reason that day (numbers stripped), in plain words when it's the usual storm story
+    const ours = plans[0] && plans[0].batteries.flatMap((b) => b.steps);
+    let why = "";
+    if (ours && ours.length) {
+      const count = {};
+      for (const x of ours) { const r = String(x.reason || "").split(",")[0].trim(); count[r] = (count[r] || 0) + 1; }
+      const [top, n] = Object.entries(count).sort((a, b) => b[1] - a[1])[0];
+      why = /holding: full/.test(top)
+        ? `Most of the day (${fmtPct(n / ours.length)} of half hours) the batteries were already full and the pinch points had no room to sell into: on a storm day the cable, not the battery, is the limit. `
+        : `Most common decision that day: "${top}" (${fmtPct(n / ours.length)} of half hours). `;
+    }
+    $("tm-note").textContent = why + (state.farm ? `Forecast for ${farmName(state.farm)} only (click "All farms" on History to see every farm). ` : "Forecast for all 33 farms. ")
+      + `Batteries: the ${plans[0] && plans[0].batteries.length ? plans[0].batteries.length : 4} in the Batteries tab, all together. `
+      + "One day can go either way (batteries store on one day and sell on another, and the one that knows the future plans "
+      + "across the whole period); the fair comparison is the period total on the Batteries tab. "
+      + `Only ${dayFmt.format(new Date(`${state.tm.range.first}T00:00:00Z`))} – ${dayFmt.format(new Date(`${state.tm.range.last}T00:00:00Z`))} can be looked back at: `
+      + "earlier days were used to train the model, so a forecast for them would be cheating.";
+  } catch (e) { showError(e); } finally { box.classList.remove("loading"); }
 }
 
 // ---------- Simulate ----------
@@ -1181,6 +1278,11 @@ async function loadApDay() {
   } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
 }
 
+function bat0Done(day) {
+  const b = day.batteries && day.batteries[0];
+  return b ? b.steps.filter((x) => x.executed).length : 0;
+}
+
 function renderApDay() {
   const day = state.ap.day;
   const bat = day.batteries[0];
@@ -1189,7 +1291,9 @@ function renderApDay() {
   const stale = day.live && issued && Date.now() - issued.getTime() > 36 * 3600 * 1000;
   badge.textContent = day.live ? (stale ? "live · stale" : "live") : "replay of the backtest";
   badge.className = "tag" + (day.live && !stale ? " live" : stale ? " stale" : "");
-  $("ap-issued").textContent = issued ? `Plan made ${shortFmt.format(issued)} UTC, using only what was known at that time.` : "";
+  const nDone = bat0Done(day);
+  $("ap-issued").textContent = (issued ? `Plan made ${shortFmt.format(issued)} UTC, using only what was known at that time.` : "") +
+    (nDone ? ` The first ${nDone} half hours show what the battery actually did; the rest is its plan.` : "");
   legend($("ap-legend"), [{ label: "Storing wasted wind", color: AP_COLORS.charge },
     { label: "Selling (cables have room)", color: AP_COLORS.discharge }, { label: "Waiting", color: AP_COLORS.hold }]);
 
@@ -1206,18 +1310,21 @@ function renderApDay() {
   $("ap-day-sum").textContent = `${bat.battery_id}: stored ${fmtEnergy(caught)} of wasted wind` + (rev == null ? "" : `, earned ${fmtCompact(rev, "£")}`) +
     ` · ${n("charge")} half hours storing, ${n("discharge")} selling, ${n("hold")} waiting`;
   strip.setAttribute("aria-label", `Actions through the day for ${bat.battery_id}`);
+  const mixed = day.live || bat0Done(day) > 0;   // part done, part still a plan
   steps.forEach((x, i) => {
     const time = hourFmt.format(new Date(x.period_start));
-    strip.append(el("span", { style: { background: AP_COLORS[x.action] || C.grid }, title: `${time} · ${x.action}: ${x.reason}`,
+    strip.append(el("span", { class: mixed && !x.executed ? "planned" : "",
+      style: { background: AP_COLORS[x.action] || C.grid }, title: `${time} · ${x.executed ? "done" : mixed ? "planned" : x.action}: ${x.action}, ${x.reason}`,
       onmouseenter: () => highlightApStep(i, false) }));
     log.append(el("div", { class: "row", "data-i": i },
       el("span", { class: "t" }, time),
       el("span", { class: "a" }, el("i", { style: { background: AP_COLORS[x.action] || C.grid } }), x.action),
-      el("span", {}, x.reason + (x.power_mw ? ` (${nf(0).format(x.power_mw)} MW)` : ""))));
+      el("span", {}, x.reason + (x.power_mw ? ` (${nf(0).format(x.power_mw)} MW)` : ""),
+        x.executed ? el("span", { class: "tag live-done" }, "done") : mixed ? el("span", { class: "tag" }, "plan") : "")));
   });
   const cap = (state.ap.scorecard.batteries.find((b) => b.battery_id === bat.battery_id) || {}).energy_mwh;
   lineChart("ap-soc-chart", steps.map((x) => hourFmt.format(new Date(x.period_start))), [
-    { label: "stored", data: steps.map((x) => x.soc_mwh), borderColor: C.planned, fill: "origin", backgroundColor: "rgba(42,120,214,0.10)" },
+    { label: "stored", data: steps.map((x) => x.soc_mwh), borderColor: C.planned, fill: "origin", backgroundColor: "rgba(14,159,191,0.12)" },
   ], { yLabel: "MWh stored" });
   if (cap) { charts["ap-soc-chart"].options.scales.y.max = cap; charts["ap-soc-chart"].update(); }
 }
@@ -1378,6 +1485,105 @@ function renderMethodBatteries(sc) {
   for (const c of sc.caveats || []) ul.append(el("li", {}, c));
 }
 
+// ---------- wind arrows (map layer): 100 m wind at each farm for one day, from Open-Meteo via /api/wind ----------
+
+state.wind = { on: false, date: null, data: null, hour: 12, timer: null, error: null };
+
+function windDate() {   // which day the arrows are for: one picked day on History, or tomorrow on Forecast
+  if (state.tab === "predict" && state.tomorrow && state.tomorrow.farms && state.tomorrow.farms[0])
+    return state.tomorrow.farms[0].hours[0].hour_start.slice(0, 10);
+  if (state.tab === "reveal" && state.range && state.range.end - state.range.start === DAY_MS) return isoDay(state.range.start);
+  return null;
+}
+
+function windArrowImage() {   // a teal arrow pointing up (north), drawn once
+  const s = 64, c = document.createElement("canvas"); c.width = c.height = s;
+  const g = c.getContext("2d");
+  g.translate(s / 2, s / 2);
+  g.beginPath(); g.moveTo(0, -26); g.lineTo(13, -4); g.lineTo(5, -6); g.lineTo(5, 24); g.lineTo(-5, 24); g.lineTo(-5, -6);
+  g.lineTo(-13, -4); g.closePath();
+  g.fillStyle = C.planned; g.strokeStyle = "#ffffff"; g.lineWidth = 3; g.lineJoin = "round";
+  g.stroke(); g.fill();
+  return g.getImageData(0, 0, s, s);
+}
+
+function drawWind() {
+  if (!map || !map.loaded()) return;
+  if (!map.hasImage("wind-arrow")) map.addImage("wind-arrow", windArrowImage(), { pixelRatio: 2 });
+  const feats = [];
+  const d = state.wind.on && state.wind.data;
+  if (d) {
+    for (const w of d.farms) {
+      const f = state.farms.find((x) => x.farm_id === w.farm_id);
+      const sp = w.speed_ms[state.wind.hour], dir = w.direction_deg[state.wind.hour];
+      if (!f || sp == null || dir == null) continue;
+      // beside the turbine, pointing where the wind blows TO (direction is where it comes from)
+      feats.push({ type: "Feature", geometry: { type: "Point", coordinates: [f.lon + 0.16, f.lat] },
+        properties: { rot: (dir + 180) % 360, speed: sp, label: `${nf(0).format(sp)}` } });
+    }
+  }
+  const data = { type: "FeatureCollection", features: feats };
+  if (map.getSource("wind")) { map.getSource("wind").setData(data); return; }
+  map.addSource("wind", { type: "geojson", data });
+  map.addLayer({ id: "wind", type: "symbol", source: "wind", layout: {
+    "icon-image": "wind-arrow", "icon-rotate": ["get", "rot"], "icon-rotation-alignment": "map", "icon-allow-overlap": true,
+    "icon-size": ["interpolate", ["linear"], ["get", "speed"], 0, 0.35, 25, 1.05],
+    "text-field": ["get", "label"], "text-size": 10, "text-offset": [0, 1.6], "text-allow-overlap": true,
+    "text-font": ["Noto Sans Regular"] },
+    paint: { "text-color": C.ink2, "text-halo-color": "#ffffff", "text-halo-width": 1.2 } });
+}
+
+function renderWindLabel() {
+  const d = state.wind.data, label = $("wind-label");
+  if (!state.wind.on) return;
+  if (state.wind.error) { label.textContent = state.wind.error; return; }
+  if (!d) { label.textContent = windDate() ? "Loading wind…" : "Pick one day on History (Day), or open Forecast, to see its wind."; return; }
+  const sp = d.farms.map((w) => w.speed_ms[state.wind.hour]).filter((x) => x != null);
+  const avg = sp.length ? sp.reduce((a, b) => a + b, 0) / sp.length : null;
+  label.textContent = `${dayFmt.format(new Date(`${d.date}T00:00:00Z`))}, ${String(state.wind.hour).padStart(2, "0")}:00 UTC` +
+    (avg != null ? ` · average ${nf(1).format(avg)} m/s at 100 m` : "") + ` · arrows point where the wind blows; numbers are m/s · ${d.source}`;
+}
+
+async function updateWind() {
+  const day = state.wind.on ? windDate() : null;
+  $("wind-hour").disabled = $("wind-play").disabled = !day;
+  if (!day) { state.wind.data = null; state.wind.error = null; stopWindPlay(); drawWind(); renderWindLabel(); return; }
+  if (!state.wind.data || state.wind.data.date !== day) {
+    state.wind.data = null; state.wind.error = null; renderWindLabel(); drawWind();
+    try {
+      const d = await api(`/api/wind?date=${day}`);
+      if (windDate() !== day) return;   // moved on meanwhile
+      state.wind.data = d;
+    } catch (e) {
+      state.wind.error = "Wind isn't available right now (no connection to the weather service).";
+    }
+  }
+  drawWind(); renderWindLabel();
+}
+
+function stopWindPlay() {
+  if (state.wind.timer) clearInterval(state.wind.timer);
+  state.wind.timer = null; $("wind-play").textContent = "▶";
+}
+
+function initWind() {
+  $("wind-toggle").addEventListener("click", () => {
+    state.wind.on = !state.wind.on;
+    $("wind-toggle").setAttribute("aria-pressed", String(state.wind.on));
+    $("wind-body").hidden = !state.wind.on;
+    if (!state.wind.on) stopWindPlay();
+    updateWind();
+  });
+  $("wind-hour").addEventListener("input", (e) => { stopWindPlay(); state.wind.hour = Number(e.target.value); drawWind(); renderWindLabel(); });
+  $("wind-play").addEventListener("click", () => {
+    if (state.wind.timer) return stopWindPlay();
+    $("wind-play").textContent = "❚❚";
+    state.wind.timer = setInterval(() => {
+      state.wind.hour = (state.wind.hour + 1) % 24; $("wind-hour").value = state.wind.hour; drawWind(); renderWindLabel();
+    }, 700);
+  });
+}
+
 // ---------- tabs, intro, boot ----------
 
 function setTab(tab) {
@@ -1389,6 +1595,7 @@ function setTab(tab) {
   if (tab !== "autopilot" && state.ap) stopApReplay();
   drawBatteryMarkers();
   drawSubsea();
+  updateWind();
   if (tab === "predict") loadPredict(); else if (tab === "reveal") { renderReveal(); updateMap(); loadFarmDetail().catch(showError); }
   else if (tab === "simulate") loadSimulate();
   else if (tab === "autopilot") { loadAutopilot(); updateMap(); }
