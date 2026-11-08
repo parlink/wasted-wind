@@ -25,7 +25,7 @@
     targetWaitMs: 4000,           // how long to wait for a step's element before skipping the step
     settleMinMs: 400,             // pause after every action
     settleMaxMs: 6000,            // give up waiting for a load after this
-    busySelector: ".tab.loading:not([hidden])",   // the app's own "still loading" marker
+    busySelector: ".tab.loading:not([hidden]), #tm.loading",   // the app's own "still loading" markers (a tab, and the look-back card)
     scrollContainer: ".panel",    // what scrolls when a target is below the fold
     restore: "reload",            // "reload": leaving the tour reloads the page, so nothing is left changed
   };
@@ -156,8 +156,8 @@
         label: "Where: each farm's share of that day's waste", hold: 8000 },
       { id: "farm", do: [["tab", "reveal"], ["call", "setRange", D.storm, D.storm], ["call", "ensureTopFarm"]], show: "reveal.farm.chart",
         label: "The biggest farm: planned and delivered output, half hour by half hour; the gap is the wasted wind", hold: 12000 },
-      { id: "methods", do: [["tab", "reveal"], ["call", "setRange", D.storm, D.storm], ["call", "ensureTopFarm"]], show: "reveal.farm.ab",
-        label: "Checked two independent ways: the grid's switch-off instructions, and wind speed through the farm's power curve", hold: 11000 },
+      { id: "methods", do: [["tab", "reveal"], ["call", "setRange", D.monthA, D.monthB], ["call", "ensureTopFarm"]], show: "reveal.farm.ab",
+        label: "Checked two independent ways over October 2026: the grid's switch-off instructions, and wind speed through the farm's power curve", hold: 11000 },
       { id: "why", do: [["tab", "reveal"], ["call", "setRange", D.storm, D.storm]], show: ["reveal.boundary", "reveal.binding"],
         label: "Why: which of the two cables was full", hold: 9000 },
       { id: "cost", do: [["tab", "reveal"], ["call", "setRange", D.storm, D.storm]], show: "reveal.tiles",
