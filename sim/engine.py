@@ -38,10 +38,27 @@ except ImportError:
     lp_plan_day, LP_DISPATCHER = None, None
 
 
+try:   # #52: the uncertainty-aware planner (plans towards the high end of the forecast band)
+    from dispatch import band as band_planner
+except ImportError:
+    band_planner = None
+
+
+def band_weight() -> float:
+    """The weight tuned on May-Jul in scorecard.json, else the planner's default."""
+    try:
+        sc, _ = data.json_file("scorecard.json")
+        return float(sc.get("band_weight", {}).get("chosen"))
+    except Exception:   # noqa: BLE001 - older data or fixtures without it
+        return band_planner.DEFAULT_WEIGHT if band_planner else 0.0
+
+
 def planner_for(battery: dict):
     """(plan_day function, module name) for a scenario battery. Falls back to the rule dispatcher
     when the LP isn't available, and says so in the result."""
-    if battery.get("dispatcher") == "lp" and lp_plan_day is not None:
+    if battery.get("dispatcher") == "lp_band" and band_planner is not None:
+        return band_planner.plan_day, "dispatch.band"
+    if battery.get("dispatcher") in ("lp", "lp_band") and lp_plan_day is not None:
         return lp_plan_day, LP_DISPATCHER
     return plan_day, DISPATCHER
 
@@ -89,6 +106,8 @@ class Inputs:
     price: np.ndarray             # (T,) market price £/MWh
     fc_n: np.ndarray              # (T,) forecast waste behind each zone, MWh per half hour, NaN if none
     fc_s: np.ndarray
+    fc_n_p90: np.ndarray | None = None   # (T,) high end (p90) of the zone forecast, for the band planner
+    fc_s_p90: np.ndarray | None = None
     data_gaps: dict = field(default_factory=dict)       # residual/limit/price gaps and how they were filled
     dropped_bmus: list = field(default_factory=list)    # in curtailment but not in farms.csv
     dropped_curtailed_mwh: float = 0.0
@@ -173,11 +192,14 @@ def _load(signature: tuple, source: str) -> Inputs:
         fc = fc[fc["issued_at"] <= cutoff]
     f = fc.sort_values("issued_at").drop_duplicates(["farm_id", "hour_start"], keep="last")
     fz = f.groupby(["zone", "hour_start"])["curtailed_mwh_pred"].sum()
+    fz90 = (f.groupby(["zone", "hour_start"])["curtailed_mwh_p90"].sum(min_count=1)
+            if "curtailed_mwh_p90" in f else None)
 
-    def fc_series(zone):
-        if zone not in fz.index.get_level_values(0):
+    def fc_series(zone, src=None):
+        src = fz if src is None else src
+        if zone not in src.index.get_level_values(0):
             return np.full(len(periods), np.nan)
-        s = fz.loc[zone]
+        s = src.loc[zone]
         s.index = pd.DatetimeIndex(s.index)
         return (s.reindex(periods.floor("h")) / 2).to_numpy(float)
 
@@ -191,6 +213,8 @@ def _load(signature: tuple, source: str) -> Inputs:
         price=zone_series("north_scotland", "market_price_gbp_mwh"),
         fc_n=fc_series("north_scotland"), fc_s=fc_series("south_scotland"),
     )
+    if fz90 is not None:
+        inp.fc_n_p90, inp.fc_s_p90 = fc_series("north_scotland", fz90), fc_series("south_scotland", fz90)
     inp.data_gaps = gaps
     inp.dropped_bmus = dropped
     if {"lat", "lon"} <= set(units.columns):
@@ -350,6 +374,11 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
         p = {"north": north, "sig": sig_n if north else sig_s, "fallback": fb_n if north else fb_s,
              "soc": 0.0, "head": head_n if north else head_s, "units": units, "farm_ids": sorted(set(inp.farm[units])),
              "charge": np.zeros(T), "discharge": np.zeros(T), "soc_mwh": np.zeros(T)}
+        if (b.get("dispatcher") == "lp_band" and band_planner is not None and sc["forecast_quality"] == "ours"
+                and not units.any() and inp.fc_n_p90 is not None):
+            # #52: plan towards the high end of the band. A North battery sees North + South, like sig_n
+            hi = (np.nan_to_num(inp.fc_n_p90[:T]) + np.nan_to_num(inp.fc_s_p90[:T])) if north else inp.fc_s_p90[:T]
+            p["sig"] = band_planner.band_signal(p["sig"], hi, band_weight())
         if units.any() and cut0 is not None:
             # it can only ever see and catch its own farms' waste
             local = cut0[:, units].sum(axis=1) * H
