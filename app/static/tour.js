@@ -142,6 +142,7 @@
     else me.root.style.removeProperty("--tour-dim");
     renderCard();
     hideSpot();
+    snapCard();   // the new caption may be taller or shorter: put the card in its corner now, not after the step loads
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     if (T.funcs.beforeStep) await T.funcs.beforeStep();
     for (const a of step.do || []) {
@@ -235,6 +236,18 @@
       place(rects.length ? unionRect(rects) : null);
     }
     run.raf = requestAnimationFrame(frame);
+  }
+  /** Put the card in its preferred corner at once (no slide), for the caption it shows now. place() moves it
+   *  aside later only if the spotlight would sit under it. */
+  function snapCard() {
+    const vp = { w: window.innerWidth, h: window.innerHeight };
+    const em = parseFloat(getComputedStyle(run.root).fontSize) || 16;
+    const pick = chooseCorner(S.card, { w: run.card.offsetWidth, h: run.card.offsetHeight }, vp, 1.1 * em, null);
+    run.card.style.transition = "none";
+    run.card.style.left = `${pick.rect.left}px`;
+    run.card.style.top = `${pick.rect.top}px`;
+    void run.card.offsetWidth;            // apply the jump before the transition comes back
+    run.card.style.transition = "";
   }
   function place(target) {
     const vp = { w: window.innerWidth, h: window.innerHeight };
