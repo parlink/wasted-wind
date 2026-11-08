@@ -49,9 +49,8 @@ def potential_mw(planned_mw: np.ndarray, wind_ms: np.ndarray, cap_mw: np.ndarray
 
 # Typical Scottish monthly mean air temperature, deg C: Met Office UK climate averages 1991-2020, Scotland
 # district (https://www.metoffice.gov.uk/research/climate/maps-and-data/uk-climate-averages), approximate.
-# Stop-gap: the data has no temperature column yet, so heat pumps follow the usual year, not each actual day.
-# That OVERSTATES what heat pumps absorb (cold Scottish days tend to be calm, windy days mild); a daily
-# Open-Meteo temperature series per zone is requested from the data side (#15 review).
+# Only a fallback now: heat pumps follow residual.parquet temperature_2m_c (#45) where it exists. The
+# monthly table alone OVERSTATES what heat pumps absorb (cold Scottish days tend to be calm, windy days mild).
 SCOTLAND_MONTHLY_TEMP_C = np.array([3.3, 3.6, 4.9, 7.0, 9.7, 12.3, 13.9, 13.6, 11.7, 8.6, 5.6, 3.5])
 HEATING_BASE_C = 15.5      # UK degree-day base: below this, homes need heating
 
@@ -67,19 +66,25 @@ def _mean_one(x: np.ndarray) -> np.ndarray:
     return x / m if m > 0 else np.ones_like(x)
 
 
-def demand_growth_mw(periods, zone: dict) -> np.ndarray:
+def demand_growth_mw(periods, zone: dict, temperature_c: np.ndarray | None = None) -> np.ndarray:
     """Lever 6: extra demand in one zone, MW per half hour, for {heat_pumps_gw, evs_gw, data_centres_gw}.
 
     Each GW figure is the average over the period; the shapes only move it around in time.
-    Heat pumps: heating degrees (15.5 C minus the month's typical temperature) x a morning/evening
-    shape, so mostly winter. EVs: overnight and evening charging. Data centres: flat.
+    Heat pumps: heating degrees (15.5 C minus the temperature) x a morning/evening shape, so mostly
+    winter and mostly on cold days. temperature_c is the zone's real temperature per period
+    (residual.parquet temperature_2m_c, population-weighted); where it is missing, or not given at
+    all, the month's typical temperature is used. EVs: overnight and evening charging. Data centres: flat.
     """
     if not zone or not any(float(v or 0) for v in zone.values()):
         return np.zeros(len(periods))
     zone = {k: float(v or 0) for k, v in zone.items()}
     hour = np.asarray(periods.hour)
     month = np.asarray(periods.month) - 1
-    heat = _mean_one(np.maximum(HEATING_BASE_C - SCOTLAND_MONTHLY_TEMP_C[month], 0.0) * HEAT_PUMP_HOURLY[hour])
+    temp = SCOTLAND_MONTHLY_TEMP_C[month]
+    if temperature_c is not None:
+        t = np.asarray(temperature_c, float)[: len(temp)]
+        temp = np.where(np.isfinite(t), t, temp)
+    heat = _mean_one(np.maximum(HEATING_BASE_C - temp, 0.0) * HEAT_PUMP_HOURLY[hour])
     ev = _mean_one(EV_HOURLY[hour])
     return 1000.0 * (float(zone.get("heat_pumps_gw", 0)) * heat + float(zone.get("evs_gw", 0)) * ev
                      + float(zone.get("data_centres_gw", 0)))

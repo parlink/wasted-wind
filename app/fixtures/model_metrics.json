@@ -4,10 +4,10 @@
   "event_threshold_mwh": 10.0,
   "models": {
     "lightgbm": {
-      "mae_mwh": 16.303,
-      "precision": 0.978,
-      "recall": 0.989,
-      "monthly_total_error_pct": 7.15
+      "mae_mwh": 17.104,
+      "precision": 0.989,
+      "recall": 0.988,
+      "monthly_total_error_pct": 7.92
     },
     "persistence": {
       "mae_mwh": 101.852,
