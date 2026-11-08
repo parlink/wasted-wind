@@ -390,7 +390,7 @@ details.explain[open] summary { margin-bottom: 4px; }
 .tabs .tab-sub { font-size: 10.5px; font-weight: 400; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 
 /* ---------- "How it works" card ---------- */
-.about { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+.about { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding-top: 10vh !important;
   padding: 24px calc(var(--panel-w) + var(--gap) * 2 + 8px) 24px 24px; background: rgba(14, 18, 24, 0.35); }
 @media (max-width: 1100px) { .about { padding: 16px; } }
 .about-card { position: relative; width: min(680px, 100%); max-height: calc(100vh - 48px); overflow-y: auto;
@@ -413,3 +413,25 @@ details.explain[open] summary { margin-bottom: 4px; }
 .about-x { position: absolute; top: 14px; right: 14px; border: 0; background: var(--fill); border-radius: 50%;
   width: 28px; height: 28px; cursor: pointer; color: var(--ink-2); }
 .about-x:hover { background: rgba(118, 118, 128, 0.2); }
+
+/* intro pages */
+.about-eyebrow { margin: 0 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--waste); }
+.about-page[data-page="2"] .about-eyebrow { color: var(--planned); }
+.about-page[data-page="3"] .about-eyebrow { color: var(--muted); }
+.about-page .about-lead + .about-lead { margin-top: 12px; }
+.about-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 14px 0; }
+.about-tiles .value { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin-top: 2px; }
+.about-tiles .tile:first-child .value { color: var(--waste); }
+.about-trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0 10px; }
+.about-trio p { margin: 4px 0 0; font-size: 13px; line-height: 1.45; color: var(--ink-2); }
+.about-trio .label { font-weight: 700; color: var(--planned); }
+.about-proof { font-size: 14px; line-height: 1.5; color: var(--ink-2); background: rgba(14, 159, 191, 0.08);
+  border-radius: var(--r-md); padding: 10px 12px; margin: 4px 0 0; }
+.about-proof:empty { display: none; }
+.about-proof b { color: var(--ink); }
+.about-nav { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; gap: 12px; flex-wrap: wrap; }
+.about-nav .about-actions { margin: 0; }
+.about-dots { display: flex; gap: 6px; }
+.about-dots span { width: 7px; height: 7px; border-radius: 50%; background: rgba(118, 118, 128, 0.3); transition: background 0.2s, width 0.2s; }
+.about-dots span.on { background: var(--ink); width: 18px; border-radius: 4px; }
+@media (max-width: 700px) { .about-tiles { grid-template-columns: repeat(2, 1fr); } .about-trio { grid-template-columns: 1fr; } }
