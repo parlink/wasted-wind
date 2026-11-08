@@ -1,4 +1,4 @@
-"""Wasted Wind API. Endpoints and shapes: docs/CONTRACT.md §7. Run: make serve
+"""Windfall API. Endpoints and shapes: docs/CONTRACT.md §7. Run: make serve
 
 Tables from app.data are cached and shared: never modify them in place.
 """
@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app import contract, data
 
-app = FastAPI(title="Wasted Wind", version="0.1")
+app = FastAPI(title="Windfall", version="0.1")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ISO = "%Y-%m-%dT%H:%M:%SZ"
 

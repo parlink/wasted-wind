@@ -1,4 +1,4 @@
-/* Wasted Wind dashboard: map + Reveal and Predict tabs. Talks only to the API in docs/CONTRACT.md §7.
+/* Windfall dashboard: map + Reveal and Predict tabs. Talks only to the API in docs/CONTRACT.md §7.
  * Data-derived text is inserted with textContent, never innerHTML. */
 "use strict";
 

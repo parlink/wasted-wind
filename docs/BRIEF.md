@@ -1,10 +1,10 @@
-# Wasted Wind: Project Brief
+# Windfall: Project Brief
 
 Nov 7, 2026 · @p
 
 ## Summary
 
-Wasted Wind rebuilds how much clean electricity each Scottish wind farm is paid to throw away, predicts tomorrow's waste, automatically schedules batteries to catch it, and lets anyone test fixes in a live grid simulator with 13 controls.
+Windfall rebuilds how much clean electricity each Scottish wind farm is paid to throw away, predicts tomorrow's waste, automatically schedules batteries to catch it, and lets anyone test fixes in a live grid simulator with 13 controls.
 
 **One-line pitch:** "Scotland pays wind farms to switch off when the grid is full, then pays gas plants in England to replace them. We revealed where and when that happens, predict it a day ahead, let a model run batteries automatically to capture it, and let you test what new cables, batteries or demand would change."
 
@@ -121,7 +121,7 @@ Every line of both briefs maps to a built feature. The one HRT gap from the earl
 
 **HRT: Best Use of Data for Predictions & Decision Making**
 
-| HRT card says | Wasted Wind delivers | Verdict |
+| HRT card says | Windfall delivers | Verdict |
 | --- | --- | --- |
 | Track title: *Predictions* | Part 2: a day-ahead forecast of wasted energy per farm, scored against three baselines | Met |
 | Track title: *Decision Making* | Part 3: a dispatcher that turns forecasts into battery schedules automatically; Part 4: storage and cable decisions | Met |
@@ -134,7 +134,7 @@ Every line of both briefs maps to a built feature. The one HRT gap from the earl
 
 **G-Research: Make the invisible visible**
 
-| G-Research slide says | Wasted Wind delivers | Verdict |
+| G-Research slide says | Windfall delivers | Verdict |
 | --- | --- | --- |
 | Choose something hard to observe | When, where and why wind is wasted, half-hour by half-hour and farm by farm, and which bottleneck caused it | Met |
 | Build tools to collect data, or dig into public data | Fetchers for Elexon, NESO and Open-Meteo; a reconstruction pipeline | Met |
@@ -529,7 +529,7 @@ Each person drives one Claude Code agent on their own Pro plan; Gemini is a help
 **CLAUDE.md** (commit this in the first 30 minutes; every Claude and Gemini session reads it):
 
 ```markdown
-# Wasted Wind — rules for all agents
+# Windfall — rules for all agents
 Project: reconstruct, forecast, dispatch and simulate Scottish wind curtailment.
 Brief: see docs/BRIEF.md. Data formats and API shapes: docs/CONTRACT.md (never change without a PR).
 
@@ -621,7 +621,7 @@ One demo, two running orders. Pitch the idea to the HRT and G-Research reps in o
 4. What we can do with it: forecast, autopilot, simulator. (60 s)
 5. How others could reuse the pipeline. (15 s)
 
-**Devpost draft headline:** "Wasted Wind: we revealed when, where and why Scotland throws away wind power, predict it a day ahead, let an autopilot run batteries to catch it, and let you test the fixes." Use the Gemini web app to draft the full write-up from this brief, then rewrite it in your own voice.
+**Devpost draft headline:** "Windfall: we revealed when, where and why Scotland throws away wind power, predict it a day ahead, let an autopilot run batteries to catch it, and let you test the fixes." Use the Gemini web app to draft the full write-up from this brief, then rewrite it in your own voice.
 
 ## Limitations and sources
 
