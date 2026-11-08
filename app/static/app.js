@@ -706,6 +706,29 @@ function togglePlay() {
 
 // ---------- Predict ----------
 
+// #49: forecast error by days ahead (pipeline.lead_skill); hidden until the file is built
+function renderLeadSkill(rows) {
+  $("lead-block").hidden = !(rows && rows.length);
+  if (!rows || !rows.length) return;
+  const days = (k) => `${k} day${k === 1 ? "" : "s"}`;
+  legend($("lead-legend"), [{ label: "Our model", color: C.waste, kind: "line" },
+    { label: "Simple windy-day rule", color: C.neutral, kind: "line" },
+    { label: "Usual for that hour", color: C.rampZero, kind: "line" }]);
+  lineChart("lead-chart", rows.map((r) => `${days(r.lead_days)} ahead`), [
+    { label: "Our model", data: rows.map((r) => r.mae_mwh), borderColor: C.waste, pointRadius: 3, pointBackgroundColor: C.waste },
+    { label: "Simple windy-day rule", data: rows.map((r) => r.wind_rule_mae_mwh), borderColor: C.neutral, borderDash: [5, 4], pointRadius: 3, pointBackgroundColor: C.neutral },
+    { label: "Usual for that hour", data: rows.map((r) => r.baseline_mae_mwh), borderColor: C.rampZero, borderDash: [2, 3], pointRadius: 0 },
+  ], { yLabel: "Avg miss, MWh per farm-hour", tooltipLabel: (c) => ` ${nf(1).format(c.parsed.y)} MWh  ${c.dataset.label}` });
+  const first = rows[0], last = rows[rows.length - 1];
+  const worse = rows.find((r) => r.wind_rule_mae_mwh < r.mae_mwh);
+  $("lead-note").textContent = `The day before, the model misses ${nf(1).format(first.mae_mwh)} MWh per farm-hour on average and ` +
+    `catches ${fmtPct(first.recall)} of waste events; ${days(last.lead_days)} ahead, ${nf(1).format(last.mae_mwh)} MWh and ${fmtPct(last.recall)}. ` +
+    (worse ? `From ${days(worse.lead_days)} ahead the simple rule misses less hour by hour, though the model still catches more of the ` +
+      `big events (${fmtPct(worse.recall)}), so treat those days as an outlook. ` : "") +
+    `Beyond the day before there are no grid limits yet (published the day before), and ${days(last.lead_days)} is as far as ` +
+    `the weather archive keeps old forecasts.`;
+}
+
 async function loadPredict() {
   const tab = $("tab-predict");
   tab.classList.add("loading");
@@ -792,6 +815,8 @@ function renderPredict() {
   mt.append(mb);
   $("metrics-note").textContent = `An "event" is an hour where a farm wastes over ${m.event_threshold_mwh} MWh. "Warnings right" = how often a predicted event really happened; ` +
     `"events caught" = how many real events it saw coming. Tested ${m.validation}. Model ${m.model_version}.`;
+
+  renderLeadSkill(m.skill_by_lead);
 
   hbars($("shap-bars"), (m.shap_top_signals || []).map((s) => ({ id: s.signal, label: SIGNAL_NAMES[s.signal] || s.signal.replace(/_/g, " "), value: s.mean_abs_shap })),
     { color: C.planned, fmt: (v) => nf(2).format(v) });

@@ -233,3 +233,10 @@ def test_schedule_marks_executed_half_hours_on_the_live_day():
     assert all(s["period_start"] < steps[len(done)]["period_start"] for s in done)
     past = client.get("/api/autopilot/schedule?strategy=perfect").json()
     assert not any(s["executed"] for b in past["batteries"] for s in b["steps"])
+
+
+def test_forecast_metrics_include_skill_by_days_ahead():
+    # #49: one flat row per lead (pipeline.lead_skill "chart"), for the Predict tab's chart
+    rows = _ok("/api/forecast/metrics")["skill_by_lead"]
+    assert [r["lead_days"] for r in rows] == list(range(1, len(rows) + 1))
+    assert {"lead_days", "mae_mwh", "baseline_mae_mwh", "wind_rule_mae_mwh", "recall", "n"} <= set(rows[0])
