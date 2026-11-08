@@ -2,28 +2,55 @@
 
 **Wasted wind, turned into profit.** The 33 Scottish wind farms we track were paid £738M to switch off since 2024. Windfall predicts it days ahead and turns it into battery profit.
 
-Windfall is a live web app with one map of Scotland and a panel beside it. Every tracked wind farm is a turbine sitting on a circle: the bigger the circle, the more wind that farm was paid to throw away. Two dashed red lines mark the power-line bottlenecks, **B4** (northern to southern Scotland) and **B6** (Scotland to England), each labelled with how often it was full. The panel tells the story in four tabs:
-1. **History:** what was wasted.
-2. **Forecast:** what's coming, up to six days ahead.
-3. **Batteries:** an autopilot that stores the waste and sells it later.
-4. **Simulate:** test fixes such as new cables, batteries or demand.
-
-Everything is built from free public grid, market and weather data, and every number is checked against what really happened.
-
 Built at HackTheBurgh XIII (7–8 November 2026) by [parlink](https://github.com/parlink) and [aradhyak0](https://github.com/aradhyak0).
+
+## Overview
+
+Windfall is a live web app that reveals how much Scottish wind power is thrown away, predicts when it will happen up to six days ahead, and automatically runs batteries to catch it and sell it later. It's built entirely from free public grid, market and weather data, and every number is checked against what really happened.
+
+On screen it's one map of Scotland with a panel beside it. Every tracked wind farm is a turbine sitting on a circle: the bigger the circle, the more wind that farm was paid to throw away. Two dashed red lines mark the power-line bottlenecks, **B4** (northern to southern Scotland) and **B6** (Scotland to England), each labelled with how often it was full. The panel tells the story in four tabs: **History** (what was wasted), **Forecast** (what's coming), **Batteries** (an autopilot that stores it and sells it later) and **Simulate** (test fixes).
 
 ## The problem
 
-Scotland has more wind farms than its power lines can carry south. When the lines are full, the grid operator **pays wind farms to switch off**, then pays gas plants in England to replace the power. Since January 2024, across the 33 Scottish wind farms we track:
-- **24.5 TWh** of clean power was thrown away, enough for 9 million homes for a year;
-- **£738M** was paid to switch farms off;
-- **£1.8bn** of gas was burned instead, emitting **9.1 Mt** of CO₂.
+Scotland has more wind farms than its power lines can carry south to England. When the lines are full, the grid operator **pays wind farms to switch off**, then pays gas plants in England to replace the power.
 
-On 27 October 2026, two days after Storm Boelo (24–25 October), these farms lost 89% of their possible output in one day: **115 GWh**, £3.1M in switch-off payments and £8.4M of replacement gas. The yearly totals are published. When, where and why it happens, half hour by half hour, are not, and nobody forecasts it.
+Since January 2024, across the 33 Scottish wind farms we track:
+
+| | |
+|---|---|
+| Clean power thrown away | **24.5 TWh**, enough for 9 million homes for a year |
+| Paid to switch farms off | **£738M** |
+| Gas burned instead | **£1.8bn**, emitting **9.1 Mt of CO₂** |
+
+Two days after Storm Boelo (24–25 October 2026), these farms lost **89%** of their possible output in a single day: **115 GWh** wasted, £3.1M in switch-off payments and £8.4M of replacement gas. The yearly totals are published. When, where and why it happens, half hour by half hour, are not, and nobody forecasts it.
+
+## Our solution
+
+If you know today how much wind will be wasted tomorrow, you can act on it. Windfall does three things:
+
+1. **Reveal.** We rebuilt the waste for every farm, every half hour since 2024, from the grid's own switch-off records. Then we cross-checked it a second way, using wind speed and each turbine's power curve.
+2. **Predict.** A machine-learning model (LightGBM, 17 signals) forecasts each farm's waste up to 6 days ahead, with a likely range for tomorrow. It was tested only on months it had never seen, using only data available at 10:00 the day before. Its error is **2.3× smaller** than "same as two days ago" (about a fifth lower than the best simple rule), and it saw **82%** of real waste events coming. For 27 October it forecast 101 GWh, and 115 GWh happened.
+3. **Act.** An autopilot plans each battery's day, choosing every half hour whether to **store** wasted wind, **wait**, or **sell** when the lines have room. Replayed against reality on months held back from tuning, a battery using our forecast earned **about 27% more** than the same battery without it.
+
+## Features
+
+- **Live map of Scotland:** every wind farm shown as a turbine sized by the wind it wasted. It also shows the two bottleneck power lines and how often each was full, plus hourly wind arrows. Choose satellite, light, dark or detailed views.
+- **History:** any day, week, month or year since 2024, showing wind wasted, money paid, gas burned, CO₂ and which line was full. Click any farm to see its half hours.
+- **Forecast:** the next six days for every farm, its accuracy against simple baselines, and the signals it relies on (SHAP). You can also look back at any day since July 2024, forecast as it would have been at the time (a walk-forward replay using only earlier data).
+- **Batteries:** four real-sized batteries run by the autopilot. Each decision is shown with its price and reason, can be replayed half hour by half hour, and is re-planned live every half hour.
+- **Simulate:** a grid simulator with 15 controls:
+  - bigger power lines or an undersea cable;
+  - batteries placed on the map;
+  - heat pumps, electric cars and data centres;
+  - gas and carbon prices;
+  - windier weather.
+
+  Waste, cost and CO₂ recompute instantly.
+- **Explained everywhere:** intro pages, two guided tours, and a grey ⓘ beside every number saying where it comes from.
 
 ## Run locally
 
-You need **Python 3.13** (what we build and test with), **git**, Chrome or Edge, and, for the data download, the **GitHub CLI** logged in (`gh auth login`). The History month and week pickers use Chromium's native calendars.
+You need **Python 3.11 or newer** (we build with 3.13; CI tests 3.11), **git**, Chrome or Edge, and, for the data download, the **GitHub CLI** logged in (`gh auth login`). The History month and week pickers use Chromium's native calendars.
 
 ```sh
 git clone https://github.com/parlink/wasted-wind.git
@@ -146,7 +173,7 @@ How every number is made, what it was checked against, the data sources, and the
 
 | Setting | Default / behaviour |
 | --- | --- |
-| Runtime | Python 3.13, `pip install -r requirements.txt` (pandas, LightGBM, SHAP, SciPy, FastAPI). |
+| Runtime | Python 3.11+ (built with 3.13), `pip install -r requirements.txt` (pandas, LightGBM, SHAP, SciPy, FastAPI). |
 | Start | `make serve`, or `python -m uvicorn app.server:app --port 8000`; open `http://localhost:8000`. |
 | Data | `data/processed/` from the latest GitHub release (`data-v15`: Jan 2024 – 6 Nov 2026). Not committed to Git. |
 | Data source | `WW_DATA_SOURCE=auto` (default: real data, else samples), `processed` or `fixtures`. |
