@@ -744,7 +744,7 @@ function renderWeek() {
       title: `${dayFmt.format(new Date(d.date))}. ${d.kind === "outlook" ? "Outlook" : "Forecast"} made ${d.lead_days} day${d.lead_days > 1 ? "s" : ""} ahead.` +
         (d.p90_mwh != null ? ` Likely range (farm ranges added up): ${fmtEnergy(d.p10_mwh)} – ${fmtEnergy(d.p90_mwh)}` : " No range: only the day-ahead's range is calibrated."),
       onclick: () => selectLead(d.lead_days) },
-      el("span", { class: "wd-date" }, d.lead_days === 1 ? "Tomorrow" : wd.format(new Date(d.date))),
+      el("span", { class: "wd-date" }, d.lead_days === 1 ? `Tomorrow · ${wd.format(new Date(d.date))}` : wd.format(new Date(d.date))),
       el("span", { class: "wd-val" }, d.pred_mwh < 0.5 ? "≈ 0 MWh" : fmtEnergy(d.pred_mwh)),
       el("span", { class: "wd-bar", style: { width: `${Math.max(2, d.pred_mwh / max * 100)}%` } })));
   }

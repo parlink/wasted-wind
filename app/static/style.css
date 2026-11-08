@@ -341,7 +341,7 @@ details.explain[open] summary { margin-bottom: 4px; }
 .hero-value, .tile .value { font-variant-numeric: tabular-nums; }
 
 /* #49: the next 6 days, one card per day; outlook days (less reliable) are dashed */
-.week-strip { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin: 4px 0 14px; }
+.week-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 4px 0 14px; }   /* 2 rows of 3: a row of 6 is too narrow for "1.6 MWh" */
 .week-day { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 7px 8px; border-radius: 9px;
   background: var(--surface); border: 1px solid var(--border); cursor: pointer; font: inherit; min-width: 0; }
 .week-day .wd-date, .week-day .wd-val { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -351,5 +351,4 @@ details.explain[open] summary { margin-bottom: 4px; }
 .week-day.outlook { border-style: dashed; }
 .week-day.outlook .wd-bar { opacity: 0.35; }
 .week-day[aria-selected="true"] { box-shadow: inset 0 0 0 2px #0b0b0b; }
-@media (max-width: 560px) { .week-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 
