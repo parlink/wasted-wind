@@ -470,3 +470,7 @@ details.explain[open] summary { margin-bottom: 4px; }
 .about-steps li b { min-width: 104px; }
 .about-data { list-style: none; padding: 0; margin: 18px 0 0; font-size: 14px; color: var(--muted); }
 .about-data b { color: var(--ink-2); margin-right: 8px; }
+
+/* History: the period buttons span the same width as the date row beneath them */
+#tab-reveal .filter-row > .seg { display: flex; flex: 1; width: 100%; }
+#tab-reveal .filter-row > .seg button { flex: 1; }
