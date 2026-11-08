@@ -9,6 +9,6 @@ HackTheBurgh XIII, 7–8 November 2026.
 
 ```bash
 pip install -r requirements.txt
-gh release download data-v1 -D data/processed   # processed data from Person A
+make fetch-data                                  # latest processed data + saved models from Person A
 make serve                                       # http://localhost:8000
 ```
