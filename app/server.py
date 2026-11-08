@@ -239,7 +239,16 @@ def forecast_backtest(farm_id: Optional[str] = None, start: Optional[str] = None
 @app.get("/api/forecast/metrics")
 def forecast_metrics():
     m, src = data.json_file("model_metrics.json")
-    return {**m, "meta": meta(src)}
+    return {**m, "skill_by_lead": _skill_by_lead(src), "meta": meta(src)}
+
+
+def _skill_by_lead(src: str):
+    """#49: error by days ahead (pipeline.lead_skill's "chart" rows), from the same side as the
+    metrics; None if that file isn't built yet."""
+    path, side = data.resolve("forecast_skill_by_lead.json", src)
+    if side != src or not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8")).get("chart")
 
 
 # ---------- autopilot ----------
