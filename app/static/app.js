@@ -1549,15 +1549,50 @@ function renderApDay() {
       onmouseenter: () => highlightApStep(i, false) }));
     log.append(el("div", { class: "row", "data-i": i },
       el("span", { class: "t" }, time),
-      el("span", { class: "a" }, el("i", { style: { background: AP_COLORS[x.action] || C.grid } }), x.action),
-      el("span", {}, x.reason + (x.power_mw ? ` (${nf(0).format(x.power_mw)} MW)` : ""),
-        x.executed ? el("span", { class: "tag live-done" }, "done") : mixed ? el("span", { class: "tag" }, "plan") : "")));
+      el("span", { class: "a" }, el("i", { style: { background: AP_COLORS[x.action] || C.grid } }), ({ charge: "store", discharge: "sell", hold: "wait" })[x.action] || x.action),
+      el("span", {}, el("span", { class: "what" }, logWhat(x, mixed && !x.executed)),
+        x.executed ? el("span", { class: "tag live-done" }, "done") : mixed ? el("span", { class: "tag" }, "plan") : "",
+        el("span", { class: "why" }, logWhy(x.reason)))));
   });
   const cap = (state.ap.scorecard.batteries.find((b) => b.battery_id === bat.battery_id) || {}).energy_mwh;
   lineChart("ap-soc-chart", steps.map((x) => hourFmt.format(new Date(x.period_start))), [
     { label: "stored", data: steps.map((x) => x.soc_mwh), borderColor: C.ours, fill: "origin", backgroundColor: "rgba(14,159,191,0.12)" },
   ], { yLabel: "MWh stored" });
   if (cap) { charts["ap-soc-chart"].options.scales.y.max = cap; charts["ap-soc-chart"].update(); }
+}
+
+/** Decision log, line 1: what the battery did, in the same words every time, from the executed numbers. */
+function logWhat(x, planned) {
+  const mwh = (x.power_mw || 0) * 0.5;   // a half hour
+  const amt = (v) => (v >= 10 ? nf(0) : nf(1)).format(v);
+  if (x.action === "discharge") {
+    if (planned) return mwh < 0.05 ? "Ready to sell here if it has charge" : `Plans to sell up to ${amt(mwh)} MWh`;
+    const per = mwh > 1e-6 && x.revenue_gbp != null ? x.revenue_gbp / mwh : null;
+    return mwh < 0.05 ? "Sold almost nothing: the battery was nearly empty"
+      : `Sold ${amt(mwh)} MWh at £${nf(0).format(per)}/MWh = ${fmtCompact(x.revenue_gbp, "£")}`;
+  }
+  if (x.action === "charge") {
+    const got = x.captured_curtailment_mwh != null ? x.captured_curtailment_mwh : mwh;
+    return planned ? `Plans to store up to ${amt(mwh)} MWh of wasted wind` : `Stored ${amt(got)} MWh of wind that was being switched off`;
+  }
+  return "Waiting";
+}
+/** Line 2: the planner's reason, in plain words. Its prices are what the plan EXPECTED the day before. */
+function logWhy(reason) {
+  return (reason || "")
+    .replace(/^optimiser: |^holding: |^charging: |^discharging: /, "")
+    .replace(/^selling at (£\d+\/MWh)/, "planned: expected $1")
+    .replace(/^sell slot if charged \((£\d+\/MWh)/, "planned: sell here if charged (expected $1")
+    .replace(/^top-price half hour \((£\d+\/MWh)\)/, "planned: one of the day's top prices (expected $1)")
+    .replace(/MW room on (B\d)/, "MW of room on the $1 line")
+    .replace(/(\d+) MWh being curtailed now \(not in the plan\)/, "$1 MWh was being switched off right now (the forecast hadn't expected it)")
+    .replace(/^storing ([\d.]+) MWh of forecast waste behind (B\d)/, "planned: store $1 MWh of forecast waste behind $2")
+    .replace(/^holding, /, "")
+    .replace(/^planned sale not possible \(no room, no charge or price <= 0\)$/, "planned to sell, but couldn't: battery empty, no room on the line, or price below zero")
+    .replace(/^full, ([\d.]+) MWh waste forecast behind (B\d)$/, "full: $1 MWh of waste forecast behind $2")
+    .replace(/^forecast waste did not happen$/, "the waste the forecast expected didn't happen")
+    .replace(/^better prices later$/, "better prices expected later")
+    .replace(/^no room on (B\d)( to export)?$/, "no room on the $1 line to sell");
 }
 
 function highlightApStep(i, scroll = true) {
