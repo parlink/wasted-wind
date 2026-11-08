@@ -1135,6 +1135,11 @@ async function loadApDay() {
   } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
 }
 
+function bat0Done(day) {
+  const b = day.batteries && day.batteries[0];
+  return b ? b.steps.filter((x) => x.executed).length : 0;
+}
+
 function renderApDay() {
   const day = state.ap.day;
   const bat = day.batteries[0];
@@ -1143,7 +1148,9 @@ function renderApDay() {
   const stale = day.live && issued && Date.now() - issued.getTime() > 36 * 3600 * 1000;
   badge.textContent = day.live ? (stale ? "live · stale" : "live") : "replay of the backtest";
   badge.className = "tag" + (day.live && !stale ? " live" : stale ? " stale" : "");
-  $("ap-issued").textContent = issued ? `Plan made ${shortFmt.format(issued)} UTC, using only what was known at that time.` : "";
+  const nDone = bat0Done(day);
+  $("ap-issued").textContent = (issued ? `Plan made ${shortFmt.format(issued)} UTC, using only what was known at that time.` : "") +
+    (nDone ? ` The first ${nDone} half hours show what the battery actually did; the rest is its plan.` : "");
   legend($("ap-legend"), [{ label: "Storing wasted wind", color: AP_COLORS.charge },
     { label: "Selling (cables have room)", color: AP_COLORS.discharge }, { label: "Waiting", color: AP_COLORS.hold }]);
 
@@ -1160,14 +1167,17 @@ function renderApDay() {
   $("ap-day-sum").textContent = `${bat.battery_id}: stored ${fmtEnergy(caught)} of wasted wind` + (rev == null ? "" : `, earned ${fmtCompact(rev, "£")}`) +
     ` · ${n("charge")} half hours storing, ${n("discharge")} selling, ${n("hold")} waiting`;
   strip.setAttribute("aria-label", `Actions through the day for ${bat.battery_id}`);
+  const mixed = day.live || bat0Done(day) > 0;   // part done, part still a plan
   steps.forEach((x, i) => {
     const time = hourFmt.format(new Date(x.period_start));
-    strip.append(el("span", { style: { background: AP_COLORS[x.action] || C.grid }, title: `${time} · ${x.action}: ${x.reason}`,
+    strip.append(el("span", { class: mixed && !x.executed ? "planned" : "",
+      style: { background: AP_COLORS[x.action] || C.grid }, title: `${time} · ${x.executed ? "done" : mixed ? "planned" : x.action}: ${x.action}, ${x.reason}`,
       onmouseenter: () => highlightApStep(i, false) }));
     log.append(el("div", { class: "row", "data-i": i },
       el("span", { class: "t" }, time),
       el("span", { class: "a" }, el("i", { style: { background: AP_COLORS[x.action] || C.grid } }), x.action),
-      el("span", {}, x.reason + (x.power_mw ? ` (${nf(0).format(x.power_mw)} MW)` : ""))));
+      el("span", {}, x.reason + (x.power_mw ? ` (${nf(0).format(x.power_mw)} MW)` : ""),
+        x.executed ? el("span", { class: "tag live-done" }, "done") : mixed ? el("span", { class: "tag" }, "plan") : "")));
   });
   const cap = (state.ap.scorecard.batteries.find((b) => b.battery_id === bat.battery_id) || {}).energy_mwh;
   lineChart("ap-soc-chart", steps.map((x) => hourFmt.format(new Date(x.period_start))), [

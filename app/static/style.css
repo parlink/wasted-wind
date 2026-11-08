@@ -307,3 +307,8 @@ body:has(.tab.loading:not([hidden])) .loader { opacity: 1; visibility: visible; 
 .loader .turbine.big { width: 44px; height: 62px; }
 @media (max-width: 820px) { .loader { right: 50%; top: 70%; } }
 @media (prefers-reduced-motion: reduce) { .turbine .blades { animation: none; } }
+
+/* live timeline: planned half hours are hatched, done ones solid */
+.action-strip span.planned { opacity: 0.55; background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.55) 0 2px, transparent 2px 5px); }
+.tag.live-done { background: #e3f5e8; color: #146c2e; margin-left: 6px; }
+.decision-log .tag { margin-left: 6px; font-size: 10px; }
