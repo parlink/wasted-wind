@@ -182,9 +182,11 @@ for future ones. Live plans cover a rolling 24 h from the next half hour.
 ```
 
 `results` has one entry per (`strategy`, `dispatcher`): `do_nothing/rule`, `reactive/rule|lp`, `forecast/rule|lp`,
-`perfect/rule` (the rules given perfect knowledge) and **`perfect/lp`** (the perfect-hindsight optimum from
+**`forecast/lp_band`** (#52: the LP planner planning on point + w × (p90 − point), w tuned on the tuning months and
+recorded in `band_weight`), `perfect/rule` (the rules given perfect knowledge) and **`perfect/lp`** (the perfect-hindsight optimum from
 `dispatch.optimiser.hindsight_bound`, a true ceiling). `capture_ratio` = revenue ÷ **`perfect/lp`** revenue, so
-`perfect/lp` = 1.0, `perfect/rule` < 1 and `do_nothing` = 0.0. Extra keys: `capture_ratio_basis`, `holdout`
+`perfect/lp` = 1.0, `perfect/rule` < 1 and `do_nothing` = 0.0. Extra keys: `band_weight` (#52: `chosen`, `selected_on`,
+`forecast_revenue_gbp_by_weight`, `signal`), `capture_ratio_basis`, `holdout`
 (`months`, `capture_ratio`, `revenue_gbp` for months the planning threshold was not tuned on), `plan_waste_fraction`
 and `caveats`. `schedules.parquet` likewise has `perfect/lp` rows.
 `price_forecast_effect` (#51, only when `price_forecast.parquet` exists): per `forecast/lp` and `reactive/lp`,
@@ -253,7 +255,7 @@ All fields optional; omitted = historical setting. `{}` returns the baseline.
   "b4":  {"mode": "historical" | "fixed" | "offset", "mw": 0},
   "b6":  {"mode": "historical" | "fixed" | "offset", "mw": 0},
   "batteries": [{"battery_id": "user_1", "lat": 57.5, "lon": -4.2, "zone": "north_scotland",
-                 "power_mw": 100, "energy_mwh": 200, "efficiency": 0.88, "dispatcher": "rule" | "lp",
+                 "power_mw": 100, "energy_mwh": 200, "efficiency": 0.88, "dispatcher": "rule" | "lp" | "lp_band",
                  "site": "grid" | "farm", "radius_km": 20}],
   "weather": {"wind_scale": 1.0, "replay_start": null, "replay_end": null},
   "window": {"start": "2025-01-01", "end": "2026-01-01"},
