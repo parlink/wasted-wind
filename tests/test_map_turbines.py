@@ -55,3 +55,12 @@ def test_marker_scale_grows_with_zoom_and_keeps_growing_past_zoom_12():
     assert z[6] < got["max"]                                # still growing at zoom 12
     assert z[-1] == got["max"]                              # and capped so it never swamps the screen
     assert abs(z[1] - 1) < 1e-9                             # the default zoom is unchanged
+
+
+def test_marker_keeps_the_map_librarys_absolute_positioning():
+    # MapLibre pins a marker with position:absolute (.maplibregl-marker). A `position` on .turbine overrode it, so the
+    # turbines sat in the page flow instead of on their coordinates and drifted when they resized while zooming.
+    rule = re.search(r"\.turbine \{([^}]*)\}", CSS).group(1)
+    assert "position" not in rule
+    for sel in (".turbine .tower-svg, .turbine .rotor",):
+        assert f"{sel} {{ position: absolute" in CSS         # the stacked SVGs are placed inside the marker box

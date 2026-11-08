@@ -282,9 +282,12 @@ input[type="range"]:disabled { opacity: 0.4; cursor: default; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
 /* ---------- turbines (map markers and the loader) ---------- */
-.turbine { position: relative; width: calc(16px * var(--tscale, 1)); height: calc(22.4px * var(--tscale, 1)); pointer-events: none; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.35)); }
+.turbine { width: calc(16px * var(--tscale, 1)); height: calc(22.4px * var(--tscale, 1)); pointer-events: none; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.35)); }
 .turbine svg { width: 100%; height: 100%; display: block; overflow: visible; }
-/* map markers: the tower and the rotor are separate stacked SVGs; the rotor spins about the hub (12, 10 of 24 x 34) */
+/* map markers: the tower and the rotor are separate stacked SVGs; the rotor spins about the hub (12, 10 of 24 x 34).
+   Do NOT give .turbine its own `position`: MapLibre sets position:absolute on the marker (.maplibregl-marker) and
+   a later rule here would override it, pinning the turbines to the page flow instead of to their coordinates. The marker
+   is already a positioned box, so the absolutely placed SVGs below are laid out against it. */
 .turbine .tower-svg, .turbine .rotor { position: absolute; left: 0; top: 0; }
 .turbine .rotor { transform-origin: 50% 29.41%; animation: turbine-rotate var(--spin, 2.5s) linear infinite; }
 .turbine .blades-fill { fill: #ffffff; stroke: rgba(29, 29, 31, 0.45); stroke-width: 0.6; }
