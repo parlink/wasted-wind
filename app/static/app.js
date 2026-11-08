@@ -483,6 +483,7 @@ async function loadReveal() {
     const q = windowParams();
     const [reveal, boundaries] = await Promise.all([api(`/api/reveal/summary${q}`), api(`/api/reveal/boundaries${q}`)]);
     state.reveal = reveal; state.boundaries = boundaries;
+    if (!q) { state.revealAll = reveal; fillAbout(); }
     noteSource("wind farm waste", reveal.meta);
     renderReveal();
     updateMap();
@@ -1424,6 +1425,23 @@ function batteryName(b) {
   return f ? `${farmName(b.farm_id)} battery` : b.battery_id;
 }
 
+/** The battery result in plain words: { main: one sentence, note: how it was tested and how sure we are }.
+ *  The range is the day-block bootstrap 95% interval from scorecard.json (#69), as a gain over the no-forecast battery. */
+function batteryGain(sc, planner) {
+  const h = sc && sc.holdout, cr = h && h.capture_ratio;
+  const f = cr && cr[`forecast/${planner}`], r = cr && cr[`reactive/${planner === "lp_band" ? "lp" : planner}`];
+  if (f == null || !r) return null;
+  const more = f / r - 1, months = h.months || [];
+  const when = months.length ? `Tested on ${monthSpan(months)}, months we kept aside while building it.` : "";
+  if (more <= 0) return { main: "On the months we tested, our forecast did not help a battery earn more.", note: when };
+  const ci = h.forecast_minus_reactive_ci95 && h.forecast_minus_reactive_ci95[planner];
+  const range = ci && ci.length === 2
+    ? ` With only ${months.length} months to test on, the real gain could be anywhere from ${Math.max(0, Math.round((ci[0] / r) * 100))}% to ${Math.round((ci[1] / r) * 100)}%.`
+    : "";
+  return { main: `A battery using our forecast earned about ${Math.round(more * 100)}% more than the same battery without one.`,
+           note: when + range };
+}
+
 function apLpCeiling() {
   return state.ap.scorecard.results.some((r) => r.strategy === "perfect" && r.dispatcher === "lp");
 }
@@ -1435,6 +1453,9 @@ function renderScorecard() {
   const hf = h && h[`forecast/${apPlannerFor("forecast")}`], hr = h && h[`reactive/${apPlannerFor("reactive")}`];
   const held = hf != null && hr != null;   // the fair headline: months the planning rules never saw
   const whole = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
+  const gain = held ? batteryGain(sc, apPlannerFor("forecast")) : null;
+  $("ap-plain").hidden = $("ap-plain-note").hidden = !gain;
+  if (gain) { $("ap-plain").textContent = gain.main; $("ap-plain-note").textContent = gain.note; }
   countUp($("ap-headline"), held ? `${fmtPct(hf)} vs ${fmtPct(hr)}` : whole);
   const period = sc.period ? `${dayFmt.format(new Date(sc.period.start))} – ${dayFmt.format(new Date(new Date(sc.period.end) - 1))}` : "";
   $("ap-headline-sub").textContent = `Share of the best possible earnings a battery makes with our forecast vs with no forecast. ` +
@@ -1824,7 +1845,91 @@ function setTab(tab) {
   else { if (tab === "method") loadMethod().catch(showError); updateMap(); }
 }
 
+// ---------- "How it works": the plain-English story and the data, shown on the first visit ----------
+const STORM_DAY = "2026-10-27";   // the biggest day in the data, 12 days before judging: the "why now" of the intro
+let aboutPage = 1;
+function showAbout(open) {
+  $("about").hidden = !open;
+  if (open) { aboutGo(1); fillStorm(); }
+  else try { localStorage.setItem("ww-about-seen", "1"); } catch (_) { /* private mode */ }
+}
+function aboutGo(n) {
+  aboutPage = n;
+  document.querySelectorAll(".about-page").forEach((s) => (s.hidden = Number(s.dataset.page) !== n));
+  document.querySelectorAll(".about-dots span").forEach((d, i) => d.classList.toggle("on", i === n - 1));
+  $("about-back").hidden = n === 1;
+  $("about-next").hidden = n === 3;
+  $("about-tour").hidden = n !== 3;
+  $("about-explore").textContent = n === 3 ? "Explore myself" : "Skip";
+  $("about").querySelector(".about-card").scrollTop = 0;
+}
+function fillAbout() {   // the headline figures, from the History totals over all the data
+  const t = state.revealAll && state.revealAll.totals;
+  if (!t) return;
+  $("about-twh").textContent = fmtEnergy(t.curtailed_twh * 1e6);
+  $("about-paid").textContent = fmtCompact(Math.abs(t.payments_gbp), "£");
+  $("about-gas").textContent = fmtCompact(t.replacement_gas_gbp, "£");
+}
+let stormFilled = false;
+async function fillStorm() {   // the storm day's figures, live from the same API the History tab uses
+  if (stormFilled) return;
+  stormFilled = true;
+  const end = isoDay(new Date(new Date(`${STORM_DAY}T00:00:00Z`).getTime() + DAY_MS));
+  try {
+    const [r, bt, sc] = await Promise.all([api(`/api/reveal/summary?start=${STORM_DAY}&end=${end}`),
+      api(`/api/forecast/backtest?start=${STORM_DAY}&end=${end}`).catch(() => null),
+      api("/api/autopilot/scorecard").catch(() => null)]);
+    const t = r.totals, cut = t.curtailed_twh * 1e6, pot = r.farms.reduce((a, f) => a + (f.potential_mwh || 0), 0);
+    $("storm-twh").textContent = fmtEnergy(cut);
+    $("storm-paid").textContent = fmtCompact(Math.abs(t.payments_gbp), "£");
+    $("storm-gas").textContent = fmtCompact(t.replacement_gas_gbp, "£");
+    $("storm-co2").textContent = `${fmtCompact(t.co2_t)} t`;
+    if (pot > 0) { $("storm-share").textContent = fmtPct(cut / pot); $("storm-potential").textContent = fmtEnergy(pot); }
+    const whole = r.farms.filter((f) => f.share_wasted >= 0.99).sort((a, b) => b.curtailed_mwh - a.curtailed_mwh);
+    if (whole.length >= 2) {
+      const names = whole.slice(0, 3).map((f) => farmName(f.farm_id));
+      $("storm-farms").textContent = `${whole.length} farms, including ${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}, ` +
+        "were switched off for the whole day.";
+    }
+    if (bt && bt.series.length) {
+      const pred = bt.series.reduce((a, x) => a + (x.pred_mwh || 0), 0), act = bt.series.reduce((a, x) => a + (x.actual_mwh || 0), 0);
+      $("about-proof").innerHTML = "";
+      const g = batteryGain(sc, "lp");
+      $("about-proof").append(
+        el("p", {}, el("b", {}, "Did we see the storm coming? "),
+          `Yes. At 10:00 the day before, our forecast said ${fmtEnergy(pred)} would be wasted on 27 October. ${fmtEnergy(act)} was.`),
+        ...(g ? [el("p", {}, el("b", {}, "Does acting on it pay? "), g.main), el("p", { class: "small" }, g.note)] : []));
+    }
+  } catch (_) { stormFilled = false; }
+}
+function initAbout() {
+  $("about-open").addEventListener("click", () => showAbout(true));
+  $("about-close").addEventListener("click", () => showAbout(false));
+  $("about-explore").addEventListener("click", () => showAbout(false));
+  $("about-next").addEventListener("click", () => aboutGo(Math.min(3, aboutPage + 1)));
+  $("about-back").addEventListener("click", () => aboutGo(Math.max(1, aboutPage - 1)));
+  $("about").addEventListener("click", (e) => { if (e.target === $("about")) showAbout(false); });
+  document.addEventListener("keydown", (e) => {
+    if ($("about").hidden) return;
+    if (e.key === "Escape") showAbout(false);
+    else if (e.key === "ArrowRight") aboutGo(Math.min(3, aboutPage + 1));
+    else if (e.key === "ArrowLeft") aboutGo(Math.max(1, aboutPage - 1));
+  });
+  $("about").querySelectorAll("[data-go]").forEach((n) => n.addEventListener("click", (e) => {
+    e.preventDefault(); showAbout(false); setTab(n.dataset.go);
+  }));
+  $("about-tour").addEventListener("click", () => {
+    showAbout(false);
+    const b = document.querySelector('[data-tour-start="1"]');
+    if (b) b.click();
+  });
+  let seen = false;
+  try { seen = localStorage.getItem("ww-about-seen") === "1"; } catch (_) { /* show it */ }
+  if (!seen && !/[?&](notour\b|tour=)/.test(location.search)) showAbout(true);   // never over a tour started from the URL
+}
+
 async function boot() {
+  initAbout();
   document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.addEventListener("click", () => { stopPlay(); setMode(b.dataset.mode); }));
   $("play").addEventListener("click", togglePlay);
