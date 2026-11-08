@@ -18,7 +18,7 @@ def colours(label, key="color"):
 
 def test_palette_defines_the_two_families_and_nothing_still_uses_the_old_name():
     assert "C.planned" not in APP and "planned:" not in APP[:APP.index("function el(")]
-    for name in ("ours", "oursDeep", "oursWash", "waste", "wasteDeep", "wasteWash", "wind"):
+    for name in ("ours", "oursDeep", "oursWash", "waste", "wasteLight", "wasteWash", "wind"):
         assert re.search(rf"\b{name}: ", APP[:APP.index("function el(")]), name
 
 
@@ -37,8 +37,10 @@ def test_our_forecast_model_and_scenario_are_always_ours():
 
 
 def test_paired_splits_use_two_tones_of_the_waste_colour():
-    assert colours("Method A", "borderColor") == {"C.waste"} and colours("Method B", "borderColor") == {"C.wasteDeep"}
-    assert 'b4, C.waste]' in APP and 'b6, C.wasteDeep]' in APP
+    assert colours("Method A", "borderColor") == {"C.waste"} and colours("Method B", "borderColor") == {"C.wasteLight"}
+    assert 'b4, C.waste]' in APP and 'b6, C.wasteLight, C.ink]' in APP     # the light segment has dark text
+    # the two tones must stay clearly apart (Parlin's validator: OKLab dE >= 15; the dark #8a0f45 was only 14.2)
+    assert '#e97aa8' in APP
 
 
 def test_baselines_and_plans_are_grey_and_raspberry_is_not_used_for_battery_actions():

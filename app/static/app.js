@@ -4,7 +4,7 @@
 
 // The palette has ONE meaning per colour, on every tab:
 //   raspberry (waste)  wind that was actually wasted: the map's circles on History, farm bars, the gap in a farm's chart,
-//                      "Really wasted". Its darker tone (wasteDeep) is the second item of a pair of waste splits
+//                      "Really wasted". Its lighter tone (wasteLight) is the second item of a pair of waste splits
 //                      (B6 next to B4, Method B next to Method A).
 //   teal (ours)        what WE produce: our forecast (incl. "Expected waste" on Forecast), our model, a Simulate scenario,
 //                      our battery's actions (storing; selling in the darker oursDeep), the cable and batteries you place.
@@ -13,7 +13,7 @@
 // So wasted wind is raspberry, and anything we predict or decide is teal. Change a colour here, not at its uses.
 const C = {
   ours: "#0e9fbf", oursDeep: "#064a5c", oursWash: "rgba(14,159,191,0.16)",
-  waste: "#c81e6a", wasteDeep: "#8a0f45", wasteWash: "rgba(200,30,106,0.18)", neutral: "#898781",
+  waste: "#c81e6a", wasteLight: "#e97aa8", wasteWash: "rgba(200,30,106,0.18)", neutral: "#898781",
   wind: "#4a5a6e",   // weather (the wind arrows): not ours, not waste
   grid: "#e1e0d9", axis: "#c3c2b7", ink: "#0b0b0b", ink2: "#52514e", muted: "#898781", critical: "#d03b3b",
   surface: "#fcfcfb", rampZero: "#b8b6ae",
@@ -514,12 +514,12 @@ function renderReveal() {
     return;
   }
   const b4 = t.by_boundary_twh.B4 || 0, b6 = t.by_boundary_twh.B6 || 0, tot = b4 + b6;
-  const parts = [["B4", "northern → southern Scotland", b4, C.waste], ["B6", "Scotland → England", b6, C.wasteDeep]];
+  const parts = [["B4", "northern → southern Scotland", b4, C.waste], ["B6", "Scotland → England", b6, C.wasteLight, C.ink]];   // dark text on the light segment
   bar.setAttribute("aria-label", parts.map(([n, , v]) => `${n} ${fmtPct(tot ? v / tot : 0)}`).join(", "));
-  for (const [name, desc, v, color] of parts) {
+  for (const [name, desc, v, color, text] of parts) {
     if (!tot || v <= 0) continue;
     const share = v / tot;
-    bar.append(el("div", { style: { flex: `${share} 1 0`, background: color },
+    bar.append(el("div", { style: { flex: `${share} 1 0`, background: color, ...(text ? { color: text } : {}) },
       title: `${name} (${desc}): ${fmtEnergy(v * 1e6)}, ${fmtPct(share)}` }, share > 0.12 ? fmtPct(share) : ""));
   }
   legend($("boundary-legend"), parts.map(([n, d, v, c]) => ({ label: `${n} ${d} · ${fmtEnergy(v * 1e6)}`, color: c })));
@@ -628,11 +628,11 @@ async function loadFarmDetail() {
   const hasB = b.some((v) => v != null);
   legend($("ab-legend"), [
     { label: "From grid switch-off orders", color: C.waste, kind: "line" },
-    ...(hasB ? [{ label: "From weather (wind speed vs metered output)", color: C.wasteDeep, kind: "line" }] : []),
+    ...(hasB ? [{ label: "From weather (wind speed vs metered output)", color: C.wasteLight, kind: "line" }] : []),
   ]);
   lineChart("ab-chart", dl.map((k) => step === "month" ? monthFmt.format(new Date(`${k}-01T00:00:00Z`)) : dayFmt.format(new Date(k))), [
     { label: "Method A", data: a, borderColor: C.waste, pointRadius: dl.length < 40 ? 3 : 0, pointBackgroundColor: C.waste },
-    ...(hasB ? [{ label: "Method B", data: b, borderColor: C.wasteDeep, borderDash: [5, 4], pointRadius: dl.length < 40 ? 3 : 0, pointBackgroundColor: C.wasteDeep }] : []),
+    ...(hasB ? [{ label: "Method B", data: b, borderColor: C.wasteLight, borderDash: [5, 4], pointRadius: dl.length < 40 ? 3 : 0, pointBackgroundColor: C.wasteLight }] : []),
   ], { yLabel: `MWh per ${step}` });
   const r = hasB ? pearson(a, b) : null;
   $("ab-note").textContent = !hasB ? "The weather cross-check isn't available for this farm."
