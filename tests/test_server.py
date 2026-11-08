@@ -22,7 +22,8 @@ client = TestClient(app)
 def test_fixture_parquet_matches_contract(name):
     cols, ts_cols = contract.PARQUET_FILES[name]
     df = pd.read_parquet(FIXTURES_DIR / name)
-    assert list(df.columns) == cols
+    optional = contract.RESIDUAL_OPTIONAL if name == "residual.parquet" else []
+    assert list(df.columns) == cols + optional
     assert len(df) > 0
     for c in ts_cols:
         assert str(df[c].dt.tz) == "UTC", c
@@ -195,3 +196,40 @@ def test_autopilot_schedule_reports_available_days_and_step_results():
 def test_autopilot_schedule_unknown_date_is_empty_not_error():
     s = _ok("/api/autopilot/schedule?date=1999-01-01")
     assert s["batteries"] == [] and s["available"]["first"]
+
+
+def test_wind_endpoint_shapes_and_caches(monkeypatch):
+    from app import server
+    calls = []
+
+    def fake(lats, lons, day, recent):
+        calls.append(day)
+        return [{"hourly": {"wind_speed_100m": [10.0] * 24, "wind_direction_100m": [225.0] * 24}} for _ in lats]
+    monkeypatch.setattr(server, "fetch_wind", fake)
+    server._wind_cache.clear()
+    r = client.get("/api/wind?date=2025-11-06")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["hours"]) == 24 and body["farms"] and len(body["farms"][0]["speed_ms"]) == 24
+    client.get("/api/wind?date=2025-11-06")
+    assert calls == ["2025-11-06"]                       # cached
+
+
+def test_wind_endpoint_offline_is_503(monkeypatch):
+    from app import server
+
+    def boom(*a):
+        raise ConnectionError("no wifi")
+    monkeypatch.setattr(server, "fetch_wind", boom)
+    server._wind_cache.clear()
+    assert client.get("/api/wind?date=2025-11-07").status_code == 503
+
+
+def test_schedule_marks_executed_half_hours_on_the_live_day():
+    day = client.get("/api/autopilot/schedule?strategy=forecast").json()
+    steps = day["batteries"][0]["steps"]
+    done = [s for s in steps if s["executed"]]
+    assert done and len(done) < len(steps)                       # some done, the rest still a plan
+    assert all(s["period_start"] < steps[len(done)]["period_start"] for s in done)
+    past = client.get("/api/autopilot/schedule?strategy=perfect").json()
+    assert not any(s["executed"] for b in past["batteries"] for s in b["steps"])

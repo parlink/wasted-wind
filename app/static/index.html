@@ -12,6 +12,16 @@
 
 <div id="map" aria-label="Map of Scottish wind farms"></div>
 <div id="map-legend" class="map-legend"></div>
+<div id="wind-ctl" class="wind-ctl">
+  <button type="button" id="wind-toggle" class="btn-secondary" aria-pressed="false">Wind</button>
+  <div id="wind-body" hidden>
+    <div class="wind-row">
+      <button type="button" id="wind-play" class="icon-btn" aria-label="Play through the day">▶</button>
+      <input type="range" id="wind-hour" min="0" max="23" step="1" value="12" aria-label="Hour (UTC)">
+    </div>
+    <div id="wind-label" class="note"></div>
+  </div>
+</div>
 <div id="map-tip" class="tip" hidden></div>
 <div id="fake-banner" class="fake-banner" hidden>Demo data: these are not real numbers</div>
 
@@ -124,6 +134,27 @@
       <div class="chart-box"><canvas id="backtest-chart" aria-label="Backtest forecast against actual"></canvas></div>
     </div>
 
+    <div class="block" id="tm">
+      <div class="detail-head"><h3>Look back at any past day</h3><span class="tag-est t-est">as it was made</span></div>
+      <p class="note">The forecast exactly as it was made at 10:00 the day before, using only what was known then, next to what
+        really happened, and what the batteries did with it. Pick a stormy day and see whether we saw it coming.</p>
+      <div class="filter-row date-row">
+        <button type="button" id="tm-prev" class="icon-btn" aria-label="Previous day">‹</button>
+        <input type="date" id="tm-date" aria-label="Day to look back at">
+        <button type="button" id="tm-next" class="icon-btn" aria-label="Next day">›</button>
+        <button type="button" id="tm-storm" class="btn-secondary">Biggest storm</button>
+      </div>
+      <div class="tiles">
+        <div class="tile"><div class="label">Forecast the day before</div><div class="value" id="tm-pred">–</div></div>
+        <div class="tile"><div class="label">Really wasted</div><div class="value" id="tm-actual">–</div><div class="delta" id="tm-err"></div></div>
+      </div>
+      <div id="tm-legend" class="legend"></div>
+      <div class="chart-box"><canvas id="tm-chart" aria-label="Forecast as issued against what happened, hour by hour"></canvas></div>
+      <h4>What the batteries did that day</h4>
+      <div class="table-wrap"><table id="tm-batteries" class="table"></table></div>
+      <p id="tm-note" class="note"></p>
+    </div>
+
     <div class="block">
       <h3>What the forecast pays attention to</h3>
       <p class="note">A longer bar means that input moves the prediction more, on average (mean |SHAP|).</p>
@@ -195,7 +226,7 @@
       <legend>Batteries</legend>
       <div class="lever">
         <button type="button" id="place-battery" class="btn-secondary" aria-pressed="false">Place a battery on the map</button>
-        <p class="note" id="place-hint">Click anywhere in Scotland. A battery north of B4 can store wind wasted at either pinch point; one between B4 and B6 only at B6.</p>
+        <p class="note" id="place-hint">Click anywhere in Scotland. Next to a wind farm, a battery can only store that farm's wasted wind, so where you put it matters. Connected to the grid, it can store wind wasted anywhere in its zone (north of B4: at either pinch point; between B4 and B6: only at B6).</p>
         <div id="battery-list"></div>
       </div>
       <div class="lever">
@@ -396,6 +427,9 @@
           pumps follow typical Scottish monthly temperatures, not each actual day's, which overstates what they absorb (cold days tend to
           be calm); EVs charge mostly overnight; data centres are flat. Price controls change only £ and CO₂: a multiplier keeps the
           farms' order and a flat price treats them all the same, so neither changes which farms are switched off.</li>
+        <li><b>Batteries at a wind farm</b> can only store the waste of the farms within 20 km (or the nearest one). Every battery's
+          charge is taken out of specific farms' waste, so farm-by-farm results add up to the zone totals. They plan with those
+          farms' historical forecast, which doesn't know about other changes in your scenario (bigger pinch points, more wind, a new cable).</li>
       </ul>
     </div>
 
