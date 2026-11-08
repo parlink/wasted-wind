@@ -84,7 +84,7 @@
 
     <div class="block">
       <h3>Which pinch point was full <span class="tag-est t-approx" title="Public data doesn't say which pinch point each switch-off was for, so this split is our best estimate">approximate</span></h3>
-      <p class="note">Power from Scottish wind has to travel south on the grid. The power lines have two pinch points that can only carry so much: <b>B4</b>, between northern and southern Scotland, and <b>B6</b>, the border with England (dashed red lines on the map). When one is full, farms north of it are paid to switch off.</p>
+      <details class="explain"><summary>What's a pinch point?</summary><p class="note">Scottish wind power travels south on two power-line routes that can only carry so much: <b>B4</b>, from northern to southern Scotland, and <b>B6</b>, from Scotland to England (the dashed red lines). When one is full, farms north of it are paid to switch off.</p></details>
       <div id="boundary-bar" class="segbar" role="img"></div>
       <div id="boundary-legend" class="legend"></div>
       <p id="binding-note" class="note"></p>
@@ -113,7 +113,7 @@
 
   <!-- ===== Predict ===== -->
   <section id="tab-predict" class="tab" role="tabpanel" hidden>
-    <p class="tab-intro">Our model predicts, the day before, how much wind will be wasted tomorrow, farm by farm.</p>
+    <p class="tab-intro">Each morning our model predicts how much wind will be wasted tomorrow, farm by farm.</p>
     <div class="hero">
       <div class="label"><span id="pred-scope">Wind expected to be wasted tomorrow, all farms</span> <span class="tag-est t-forecast">forecast</span> <span id="pred-fake" class="tag fake" hidden>fake data</span></div>
       <div id="pred-value" class="hero-value">–</div>
@@ -179,8 +179,8 @@
       <div id="sim-value" class="hero-value">–</div>
       <div id="sim-delta" class="delta"></div>
       <div id="sim-history" class="sub"></div>
-      <p class="note">Gains north of B4 (a bigger B4, a cable or new demand in the north) are upper bounds: the records can't
-        tell which pinch point each switch-off was for, so some waste counted as B4 may really have been caused further south.</p>
+      <details class="explain"><summary>How exact is this?</summary><p class="note">Gains north of B4 (a bigger B4, a cable,
+        or new demand in the north) are a best case: the records don't say which pinch point caused each switch-off.</p></details>
     </div>
     <div class="tiles">
       <div class="tile"><div class="label">Paid to farms to switch off</div><div class="value" id="s-payments">–</div><div class="delta" id="s-payments-d"></div></div>
@@ -199,7 +199,8 @@
     <!-- levers, grouped as in the brief -->
     <fieldset class="lever-group">
       <legend>Grid pinch points</legend>
-      <p class="note">Power from Scottish wind has to travel south on the grid. The power lines have two pinch points that can only carry so much: <b>B4</b>, between northern and southern Scotland, and <b>B6</b>, the border with England (dashed red lines on the map). When one is full, farms north of it are paid to switch off. Make one bigger to see where the waste goes.</p>
+      <p class="note">Make one bigger to see where the waste goes.</p>
+      <details class="explain"><summary>What's a pinch point?</summary><p class="note">Scottish wind power travels south on two power-line routes that can only carry so much: <b>B4</b>, from northern to southern Scotland, and <b>B6</b>, from Scotland to England (the dashed red lines). When one is full, farms north of it are paid to switch off.</p></details>
       <div class="lever" data-boundary="b4">
         <label>B4 · between northern and southern Scotland</label>
         <div class="seg" role="group" aria-label="B4 setting">
@@ -226,7 +227,7 @@
           <option value="south_scotland">From between B4 and B6 (e.g. Torness)</option>
         </select>
         <div class="lever-row" id="link-size-row" hidden><input type="range" id="link-gw" min="0.5" max="4" step="0.5" value="2" aria-label="Cable size"><output id="link-gw-out"></output></div>
-        <p class="note">It skips the pinch points: power from that zone can go straight south under the sea. Treated as 95% of its size all the time, with no outages or cable losses, so results are a little optimistic.</p>
+        <p class="note">Power from that zone goes straight south under the sea, skipping both pinch points. We assume it always runs at 95% of its size, so this is a little optimistic.</p>
       </div>
     </fieldset>
 
@@ -234,7 +235,7 @@
       <legend>Batteries</legend>
       <div class="lever">
         <button type="button" id="place-battery" class="btn-secondary" aria-pressed="false">Place a battery on the map</button>
-        <p class="note" id="place-hint">Click anywhere in Scotland. Next to a wind farm, a battery can only store that farm's wasted wind, so where you put it matters. Connected to the grid, it can store wind wasted anywhere in its zone (north of B4: at either pinch point; between B4 and B6: only at B6).</p>
+        <p class="note" id="place-hint">Click anywhere in Scotland. A battery beside a wind farm can only store that farm's wasted wind. One on the grid can store wasted wind from anywhere in its zone.</p>
         <div id="battery-list"></div>
       </div>
       <div class="lever">
@@ -244,7 +245,7 @@
           <button type="button" data-q="ours" aria-pressed="true">Our forecast</button>
           <button type="button" data-q="perfect" aria-pressed="false">Knows the future</button>
         </div>
-        <p class="note">The gap between these is what our forecast is worth. Our forecast only exists for the months we tested it on; outside them a battery plans without one.</p>
+        <p class="note">The gap between these is what our forecast is worth. Outside the months we tested the forecast on, batteries plan without it.</p>
       </div>
     </fieldset>
 
@@ -302,7 +303,7 @@
       <div class="lever">
         <label for="wind-scale">Wind speed</label>
         <div class="lever-row"><input type="range" id="wind-scale" min="70" max="130" step="5" value="100"><output id="wind-scale-out">100%</output></div>
-        <p class="note">Makes every hour windier or calmer. Output follows the turbine power curve: it rises steeply, then levels off at full power.</p>
+        <p class="note">Makes every hour windier or calmer. Turbine output rises fast with wind speed, then levels off at full power.</p>
       </div>
     </fieldset>
 

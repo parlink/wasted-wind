@@ -69,6 +69,27 @@ function showError(err) { const e = $("error"); e.textContent = `Couldn't load d
 const nf = (d) => new Intl.NumberFormat("en-GB", { maximumFractionDigits: d });
 const HOME_MWH_PER_YEAR = 2.7;   // average GB home (CONTRACT §7)
 const homesFor = (twh) => (twh == null ? null : (twh * 1e6) / HOME_MWH_PER_YEAR);
+// Headline numbers count up from their old value to the new one (skipped for reduced motion).
+const REDUCED_MOTION = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+function countUp(node, text) {
+  const m = /-?\d[\d,]*(\.\d+)?/.exec(text);
+  const prev = node._countTo;
+  if (node._countRaf) cancelAnimationFrame(node._countRaf);
+  if (!m || REDUCED_MOTION) { node.textContent = text; node._countTo = m ? parseFloat(m[0].replace(/,/g, "")) : null; return; }
+  const to = parseFloat(m[0].replace(/,/g, "")), dec = m[1] ? m[1].length - 1 : 0;
+  const from = prev != null && isFinite(prev) ? prev : 0;
+  const unitChanged = node._countUnit !== text.slice(m.index + m[0].length).trim();
+  node._countTo = to; node._countUnit = text.slice(m.index + m[0].length).trim();
+  const start = unitChanged ? 0 : from, t0 = performance.now(), ms = 650;
+  const fmt = new Intl.NumberFormat("en-GB", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3);
+    node.textContent = text.slice(0, m.index) + fmt.format(start + (to - start) * e) + text.slice(m.index + m[0].length);
+    if (k < 1) node._countRaf = requestAnimationFrame(step); else node.textContent = text;
+  };
+  node._countRaf = requestAnimationFrame(step);
+}
+
 function fmtEnergy(mwh) {
   if (mwh == null) return "–";
   const a = Math.abs(mwh);
@@ -445,7 +466,7 @@ async function loadReveal() {
 
 function renderReveal() {
   const t = state.reveal.totals;
-  $("hero-value").textContent = fmtEnergy(t.curtailed_twh * 1e6);
+  countUp($("hero-value"), fmtEnergy(t.curtailed_twh * 1e6));
   // planned = what the farms told the grid they'd generate; switched off = the part the grid refused
   const planned = state.reveal.farms.reduce((s, f) => s + (f.potential_mwh || 0), 0);
   const cut = t.curtailed_twh * 1e6;
@@ -457,10 +478,10 @@ function renderReveal() {
   // so a window's net payment can be below zero: flip the label, never show "£-37k"
   const farmsPaid = t.payments_gbp < 0;
   $("t-payments").previousElementSibling.textContent = farmsPaid ? "Farms paid to switch off (net)" : "Paid to farms to switch off";
-  $("t-payments").textContent = fmtCompact(Math.abs(t.payments_gbp), "£");
-  $("t-gas").textContent = fmtCompact(t.replacement_gas_gbp, "£");
-  $("t-co2").textContent = `${fmtCompact(t.co2_t)} t`;
-  $("t-homes").textContent = fmtCompact(homesFor(t.curtailed_twh));
+  countUp($("t-payments"), fmtCompact(Math.abs(t.payments_gbp), "£"));
+  countUp($("t-gas"), fmtCompact(t.replacement_gas_gbp, "£"));
+  countUp($("t-co2"), `${fmtCompact(t.co2_t)} t`);
+  countUp($("t-homes"), fmtCompact(homesFor(t.curtailed_twh)));
 
   // B4 vs B6: tall segmented bar, legend names the parts
   const bar = clear($("boundary-bar"));
@@ -712,7 +733,7 @@ function renderPredict() {
   const pred = sum("pred_mwh"), p10 = sum("p10_mwh"), p90 = sum("p90_mwh");
   const hasRange = scope.some((f) => f.hours.some((h) => h.p90_mwh != null));
   const total = pred.reduce((a, b) => a + b, 0);
-  $("pred-value").textContent = farms.length ? (total < 0.5 ? "≈ 0 MWh" : fmtEnergy(total)) : "No forecast";
+  countUp($("pred-value"), farms.length ? (total < 0.5 ? "≈ 0 MWh" : fmtEnergy(total)) : "No forecast");
   const issued = tm.issued_at ? new Date(tm.issued_at) : null;
   const stale = issued && Date.now() - issued.getTime() > 36 * 3600 * 1000;
   const sub = clear($("pred-sub"));
@@ -976,7 +997,7 @@ function deltaText(node, d, base, fmt, lowerIsGood = true) {
 
 function renderSim() {
   const r = state.simResult, s = r.scenario, b = r.baseline, d = r.delta;
-  $("sim-value").textContent = fmtEnergy(s.curtailed_twh * 1e6);
+  countUp($("sim-value"), fmtEnergy(s.curtailed_twh * 1e6));
   deltaText($("sim-delta"), d.curtailed_twh * 1e6, b.curtailed_twh * 1e6, fmtEnergy);
   const p1 = state.simPart1 && state.simPart1.totals.curtailed_twh;
   const sameData = state.simPart1 && state.simPart1.meta.source === r.meta.source;
@@ -1309,7 +1330,7 @@ function renderScorecard() {
   const hf = h && h[`forecast/${apPlannerFor("forecast")}`], hr = h && h[`reactive/${apPlannerFor("reactive")}`];
   const held = hf != null && hr != null;   // the fair headline: months the planning rules never saw
   const whole = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
-  $("ap-headline").textContent = held ? `${fmtPct(hf)} vs ${fmtPct(hr)}` : whole;
+  countUp($("ap-headline"), held ? `${fmtPct(hf)} vs ${fmtPct(hr)}` : whole);
   const period = sc.period ? `${dayFmt.format(new Date(sc.period.start))} – ${dayFmt.format(new Date(new Date(sc.period.end) - 1))}` : "";
   $("ap-headline-sub").textContent = `Share of the best possible earnings a battery makes with our forecast vs with no forecast. ` +
     `${sc.batteries.length} batteries. ` +

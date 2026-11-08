@@ -331,3 +331,11 @@ body:has(.tab.loading:not([hidden])) .loader { opacity: 1; visibility: visible; 
   border: 1px solid var(--border); background: var(--surface, #fff); color: inherit; }
 .link-btn { background: none; border: 0; padding: 0; font: inherit; color: var(--planned);
   text-decoration: underline; cursor: pointer; }
+
+/* fold-away explanations */
+details.explain { margin: 4px 0 8px; }
+details.explain summary { cursor: pointer; font-size: 13px; color: var(--planned); list-style: none; }
+details.explain summary::-webkit-details-marker { display: none; }
+details.explain summary::before { content: "ⓘ "; }
+details.explain[open] summary { margin-bottom: 4px; }
+.hero-value, .tile .value { font-variant-numeric: tabular-nums; }
