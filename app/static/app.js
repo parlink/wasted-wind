@@ -912,13 +912,17 @@ async function loadTimeMachine() {
     $("tm-next").addEventListener("click", () => shiftTm(1));
     $("tm-storm").addEventListener("click", () => { if (state.tm.storm) { state.tm.date = state.tm.storm; renderTimeMachine(); } });
     // the days with an honest day-ahead forecast = the backtest; find them and the biggest day once
-    const bt = await api("/api/forecast/backtest");
+    $("tm").classList.add("loading");   // marks the card busy while the first (slow) load runs
+    let bt;
+    try { bt = await api("/api/forecast/backtest"); } finally { $("tm").classList.remove("loading"); }
     const daily = dailySums(bt.series.map((p) => ({ period_start: p.hour_start, actual_mwh: p.actual_mwh })), ["actual_mwh"]);
     const days = [...daily.keys()].sort();
     if (!days.length) { $("tm-note").textContent = "No backtest forecasts in this data."; return; }
     state.tm.range = { first: days[0], last: days[days.length - 1] };
     state.tm.storm = days.reduce((a, d) => ((daily.get(d).actual_mwh || 0) > (daily.get(a).actual_mwh || 0) ? d : a), days[0]);
-    state.tm.date = state.tm.storm;
+    // a date picked while this was loading (the tour sets one straight away) wins over the storm
+    const picked = state.tm.date && state.tm.date >= state.tm.range.first && state.tm.date <= state.tm.range.last;
+    if (!picked) state.tm.date = state.tm.storm;
     $("tm-date").min = state.tm.range.first; $("tm-date").max = state.tm.range.last;
   }
   if (state.tm.date) await renderTimeMachine();
@@ -932,6 +936,7 @@ function shiftTm(delta) {
 }
 
 async function renderTimeMachine() {
+  if (!state.tm.range || !state.tm.date) return;   // still loading the range: loadTimeMachine renders when ready
   const day = state.tm.date, next = isoDay(new Date(new Date(`${day}T00:00:00Z`).getTime() + DAY_MS));
   $("tm-date").value = day;
   $("tm-prev").disabled = day <= state.tm.range.first; $("tm-next").disabled = day >= state.tm.range.last;
@@ -1494,7 +1499,7 @@ function renderApDay() {
   const caught = steps.reduce((s, x) => s + (x.captured_curtailment_mwh || 0), 0);
   const rev = steps.some((x) => x.revenue_gbp != null) ? steps.reduce((s, x) => s + (x.revenue_gbp || 0), 0) : null;
   const n = (a) => steps.filter((x) => x.action === a).length;
-  $("ap-day-sum").textContent = `${bat.battery_id}: stored ${fmtEnergy(caught)} of wasted wind` + (rev == null ? "" : `, earned ${fmtCompact(rev, "£")}`) +
+  $("ap-day-sum").textContent = `${batteryName((state.ap.scorecard.batteries.find((x) => x.battery_id === bat.battery_id)) || bat)}: stored ${fmtEnergy(caught)} of wasted wind` + (rev == null ? "" : `, earned ${fmtCompact(rev, "£")}`) +
     ` · ${n("charge")} half hours storing, ${n("discharge")} selling, ${n("hold")} waiting`;
   strip.setAttribute("aria-label", `Actions through the day for ${bat.battery_id}`);
   const mixed = day.live || bat0Done(day) > 0;   // part done, part still a plan
