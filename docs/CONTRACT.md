@@ -121,6 +121,23 @@ The dispatcher works in half hours: split each hourly value equally into its two
 Also present (added in #5/#14, extra keys are allowed): `ablations` (e.g. `lightgbm_without_neso_limits`,
 same metric keys as `models`), `interval` (`coverage_p10_p90`, `coverage_on_waste_hours`, …) and
 `notes` (list of strings). `shap_top_signals` is mean |SHAP| on each fold's held-out month.
+`ablations.lightgbm_with_orderbook` (#51): the main model plus the order-book signals, same folds.
+`price_model` (#51, written by `pipeline/price.py`, which must run **after** `pipeline/train.py`): `validation`,
+`mae_model_gbp_mwh`, `mae_7day_gbp_mwh` (the dispatcher's 7-day mean), `by_month` and `features`.
+
+### `data/processed/price_forecast.parquet` (A writes, `pipeline/price.py`, #51)
+
+Half-hourly GB market price forecast, walk-forward, issued at D-1 10:00 UTC from data known then.
+Primary key: (`period_start`, `issued_at`).
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `period_start` | timestamp UTC | Half hour the price is for. |
+| `issued_at` | timestamp UTC | D-1 10:00 UTC. |
+| `split` | str | `backtest`. |
+| `price_pred_gbp_mwh` | float | The forecast. |
+| `price_7day_gbp_mwh` | float | The dispatcher's baseline: same half hour, mean of D-8..D-2. |
+| `price_actual_gbp_mwh` | float | What the price turned out to be. |
 
 ## 5. `data/processed/schedules.parquet` (A writes, Part 3)
 
@@ -165,11 +182,18 @@ for future ones. Live plans cover a rolling 24 h from the next half hour.
 ```
 
 `results` has one entry per (`strategy`, `dispatcher`): `do_nothing/rule`, `reactive/rule|lp`, `forecast/rule|lp`,
-`perfect/rule` (the rules given perfect knowledge) and **`perfect/lp`** (the perfect-hindsight optimum from
+**`forecast/lp_band`** (#52: the LP planner planning on point + w × (p90 − point), w tuned on the tuning months and
+recorded in `band_weight`), `perfect/rule` (the rules given perfect knowledge) and **`perfect/lp`** (the perfect-hindsight optimum from
 `dispatch.optimiser.hindsight_bound`, a true ceiling). `capture_ratio` = revenue ÷ **`perfect/lp`** revenue, so
-`perfect/lp` = 1.0, `perfect/rule` < 1 and `do_nothing` = 0.0. Extra keys: `capture_ratio_basis`, `holdout`
+`perfect/lp` = 1.0, `perfect/rule` < 1 and `do_nothing` = 0.0. Extra keys: `band_weight` (#52: `chosen`, `selected_on`,
+`forecast_revenue_gbp_by_weight`, `signal`), `capture_ratio_basis`, `holdout`
 (`months`, `capture_ratio`, `revenue_gbp` for months the planning threshold was not tuned on), `plan_waste_fraction`
 and `caveats`. `schedules.parquet` likewise has `perfect/lp` rows.
+`price_forecast_effect` (#51, only when `price_forecast.parquet` exists): per `forecast/lp` and `reactive/lp`,
+`capture_ratio_7day`, `capture_ratio_price_forecast`, `holdout_capture_ratio_7day`,
+`holdout_capture_ratio_price_forecast`, `revenue_gbp_7day`, `revenue_gbp_price_forecast`,
+`battery_days_with_price_forecast`, `battery_days_fallback_7day` and `months_with_price_forecast`. The hold-out
+figures use the price forecast on every day (the scorecard refuses to write them otherwise).
 
 ## 6. Python interfaces across the A/B boundary
 
@@ -219,6 +243,7 @@ Every response body includes:
 | `GET /api/autopilot/schedule?date&battery_id` | `{"plan_issued_at", "live": bool, "batteries": [{"battery_id", "steps": [{"period_start", "action", "power_mw", "soc_mwh", "reason"}]}]}` |
 | `GET /api/autopilot/scorecard` | contents of `scorecard.json` |
 | `POST /api/scenario` | scenario results, below |
+| `GET /api/wind?date` | `{"date", "hours": [24 x ISO UTC], "farms": [{"farm_id", "speed_ms": [24], "direction_deg": [24]}], "source"}`: 100 m wind at each farm from Open-Meteo, fetched by the server and cached (archive for older days, forecast for the last 30 days and tomorrow). `direction_deg` = where the wind comes **from**. 503 if Open-Meteo can't be reached. |
 | `GET /api/method/calibration` | `{"historical_twh", "simulated_twh", "error_pct", "by_month": [{"month", "historical_mwh", "simulated_mwh"}]}` |
 
 ### `POST /api/scenario` request
@@ -230,7 +255,7 @@ All fields optional; omitted = historical setting. `{}` returns the baseline.
   "b4":  {"mode": "historical" | "fixed" | "offset", "mw": 0},
   "b6":  {"mode": "historical" | "fixed" | "offset", "mw": 0},
   "batteries": [{"battery_id": "user_1", "lat": 57.5, "lon": -4.2, "zone": "north_scotland",
-                 "power_mw": 100, "energy_mwh": 200, "efficiency": 0.88, "dispatcher": "rule" | "lp",
+                 "power_mw": 100, "energy_mwh": 200, "efficiency": 0.88, "dispatcher": "rule" | "lp" | "lp_band",
                  "site": "grid" | "farm", "radius_km": 20}],
   "weather": {"wind_scale": 1.0, "replay_start": null, "replay_end": null},
   "window": {"start": "2025-01-01", "end": "2026-01-01"},
