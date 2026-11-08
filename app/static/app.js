@@ -8,6 +8,18 @@ const C = {
   surface: "#fcfcfb", rampZero: "#b8b6ae",
 };
 const BASEMAP = "https://tiles.openfreemap.org/styles/positron";
+const MAP_VIEWS = {
+  light: BASEMAP,
+  detailed: "https://tiles.openfreemap.org/styles/liberty",
+  dark: "https://tiles.openfreemap.org/styles/dark",
+  satellite: {   // Esri World Imagery; glyphs from OpenFreeMap so the wind arrows' labels still draw
+    version: 8, glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+    sources: { sat: { type: "raster", tileSize: 256, maxzoom: 18,
+      tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+      attribution: "Imagery © Esri, Maxar, Earthstar Geographics" } },
+    layers: [{ id: "sat", type: "raster", source: "sat" }],
+  },
+};
 // Approximate boundary lines (labelled "approximate" on the map)
 const BOUNDARIES = {
   B4: [[-6.2, 56.05], [-5.2, 56.12], [-4.4, 56.15], [-3.6, 56.28], [-2.9, 56.42], [-2.3, 56.5], [-1.4, 56.5]],
@@ -57,10 +69,32 @@ function showError(err) { const e = $("error"); e.textContent = `Couldn't load d
 const nf = (d) => new Intl.NumberFormat("en-GB", { maximumFractionDigits: d });
 const HOME_MWH_PER_YEAR = 2.7;   // average GB home (CONTRACT §7)
 const homesFor = (twh) => (twh == null ? null : (twh * 1e6) / HOME_MWH_PER_YEAR);
+// Headline numbers count up from their old value to the new one (skipped for reduced motion).
+const REDUCED_MOTION = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+function countUp(node, text) {
+  const m = /-?\d[\d,]*(\.\d+)?/.exec(text);
+  const prev = node._countTo;
+  if (node._countRaf) cancelAnimationFrame(node._countRaf);
+  if (!m || REDUCED_MOTION) { node.textContent = text; node._countTo = m ? parseFloat(m[0].replace(/,/g, "")) : null; return; }
+  const to = parseFloat(m[0].replace(/,/g, "")), dec = m[1] ? m[1].length - 1 : 0;
+  const from = prev != null && isFinite(prev) ? prev : 0;
+  const unitChanged = node._countUnit !== text.slice(m.index + m[0].length).trim();
+  node._countTo = to; node._countUnit = text.slice(m.index + m[0].length).trim();
+  const start = unitChanged ? 0 : from, t0 = performance.now(), ms = 650;
+  const fmt = new Intl.NumberFormat("en-GB", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3);
+    node.textContent = text.slice(0, m.index) + fmt.format(start + (to - start) * e) + text.slice(m.index + m[0].length);
+    if (k < 1) node._countRaf = requestAnimationFrame(step); else node.textContent = text;
+  };
+  node._countRaf = requestAnimationFrame(step);
+}
+
 function fmtEnergy(mwh) {
   if (mwh == null) return "–";
   const a = Math.abs(mwh);
-  if (a >= 1e6) return `${nf(2).format(mwh / 1e6)} TWh`;
+  if (a >= 1e6) return `${nf(a >= 1e7 ? 1 : 2).format(mwh / 1e6)} TWh`;
+  if (a < 0.05) return "0 MWh";
   if (a >= 1e3) return `${nf(a >= 1e5 ? 0 : 1).format(mwh / 1e3)} GWh`;
   return `${nf(a >= 100 ? 0 : 1).format(mwh)} MWh`;
 }
@@ -83,6 +117,14 @@ const DAY_MS = 86400000;
 
 // Reveal's time window: null = everything, else [start, end) in whole UTC days.
 // The All/Year/Month/Week/Day buttons give a default range; the date boxes can set any range.
+// ["2026-08","2026-09","2026-10"] -> "Aug–Oct 2026" (or "Dec 2025 – Feb 2026" across a year)
+function monthSpan(ms) {
+  if (!ms || !ms.length) return "";
+  const d = (m) => new Date(`${m}-01T00:00:00Z`), f = (m, y) => d(m).toLocaleString("en-GB", { month: "short", ...(y ? { year: "numeric" } : {}), timeZone: "UTC" });
+  const a = ms[0], b = ms[ms.length - 1];
+  if (a === b) return f(a, true);
+  return a.slice(0, 4) === b.slice(0, 4) ? `${f(a)}–${f(b, true)}` : `${f(a, true)} – ${f(b, true)}`;
+}
 function dataStart() { return state.days[0]; }
 function dataEnd() { return new Date(state.days[state.days.length - 1].getTime() + DAY_MS); }
 function clampRange(start, end) {
@@ -129,6 +171,9 @@ function windowText() {
   if (r.end - r.start === DAY_MS) return dayFmt.format(r.start);
   if (state.mode === "month" && whole("month") && r.end - r.start < 32 * DAY_MS) return monthFmt.format(r.start);
   if (state.mode === "year" && whole("year")) return String(r.start.getUTCFullYear());
+  if (state.mode === "year" && r.end >= dataEnd() && r.start.getUTCMonth() === 0 && r.start.getUTCDate() === 1) {
+    return `${r.start.getUTCFullYear()} so far (to ${dayFmt.format(last)})`;
+  }
   return `${dayFmt.format(r.start)} – ${dayFmt.format(last)}`;
 }
 
@@ -219,12 +264,34 @@ async function basemapStyle() {
   return { version: 8, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#eef1f3" } }] };
 }
 
+function basemapIds(style) {
+  return { sources: new Set(Object.keys(style.sources || {})), layers: new Set((style.layers || []).map((l) => l.id)) };
+}
+function setMapView(view) {
+  const base = map._baseIds || { sources: new Set(), layers: new Set() };
+  document.body.dataset.mapView = view;
+  map.setStyle(MAP_VIEWS[view] || BASEMAP, {
+    transformStyle: (prev, next) => {
+      if (!prev) return next;
+      const sources = Object.fromEntries(Object.entries(prev.sources).filter(([k]) => !base.sources.has(k)));
+      const layers = prev.layers.filter((l) => !base.layers.has(l.id));
+      map._baseIds = basemapIds(next);
+      return { ...next, glyphs: next.glyphs || prev.glyphs, sources: { ...next.sources, ...sources }, layers: [...next.layers, ...layers] };
+    },
+  });
+  // images (the wind arrow) go with the old style: add it back before the wind layer needs it
+  map.once("styledata", () => { if (!map.hasImage("wind-arrow")) map.addImage("wind-arrow", windArrowImage(), { pixelRatio: 2 }); });
+}
+
 async function initMap() {
   map = new maplibregl.Map({
     container: "map", style: await basemapStyle(), center: [-4.0, 57.2], zoom: 5.6,
     attributionControl: { compact: true },
   });
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
+  // remember which layers belong to the basemap, so a view change keeps our own (farms, cables, wind)
+  map.once("style.load", () => { map._baseIds = basemapIds(map.getStyle()); });
+  $("map-view").addEventListener("change", (e) => setMapView(e.target.value));
   // the panel floats over the right of the map: keep Scotland centred in the visible part
   const padMap = () => map.setPadding({ top: 0, bottom: 0, left: 0, right: window.innerWidth > 820 ? $("panel").offsetWidth + 24 : 0 });
   padMap(); window.addEventListener("resize", padMap);
@@ -399,7 +466,7 @@ async function loadReveal() {
 
 function renderReveal() {
   const t = state.reveal.totals;
-  $("hero-value").textContent = fmtEnergy(t.curtailed_twh * 1e6);
+  countUp($("hero-value"), fmtEnergy(t.curtailed_twh * 1e6));
   // planned = what the farms told the grid they'd generate; switched off = the part the grid refused
   const planned = state.reveal.farms.reduce((s, f) => s + (f.potential_mwh || 0), 0);
   const cut = t.curtailed_twh * 1e6;
@@ -407,10 +474,14 @@ function renderReveal() {
     (planned <= 0 ? "no output expected"
       : cut === 0 ? `none of the ${fmtEnergy(planned)} the farms could make was wasted: the cables had room`
       : `${fmtPct(cut / planned)} of the ${fmtEnergy(planned)} the farms could have made`);
-  $("t-payments").textContent = fmtCompact(t.payments_gbp, "£");
-  $("t-gas").textContent = fmtCompact(t.replacement_gas_gbp, "£");
-  $("t-co2").textContent = `${fmtCompact(t.co2_t)} t`;
-  $("t-homes").textContent = fmtCompact(homesFor(t.curtailed_twh));
+  // farms on government price contracts can bid to PAY to switch off when power prices go negative,
+  // so a window's net payment can be below zero: flip the label, never show "£-37k"
+  const farmsPaid = t.payments_gbp < 0;
+  $("t-payments").previousElementSibling.textContent = farmsPaid ? "Farms paid to switch off (net)" : "Paid to farms to switch off";
+  countUp($("t-payments"), fmtCompact(Math.abs(t.payments_gbp), "£"));
+  countUp($("t-gas"), fmtCompact(t.replacement_gas_gbp, "£"));
+  countUp($("t-co2"), `${fmtCompact(t.co2_t)} t`);
+  countUp($("t-homes"), fmtCompact(homesFor(t.curtailed_twh)));
 
   // B4 vs B6: tall segmented bar, legend names the parts
   const bar = clear($("boundary-bar"));
@@ -573,26 +644,32 @@ function syncDateInputs() {
   $("range-end").value = isoDay(new Date(r.end.getTime() - DAY_MS));   // shown inclusive
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode)));
   const fixed = state.mode !== "all";
+  // one day needs one date box, not "30 Dec to 30 Dec"
+  const oneDay = r.end - r.start === DAY_MS;
+  $("range-end").hidden = oneDay;
+  document.querySelector("#tab-reveal .date-sep").hidden = oneDay;
   $("range-prev").disabled = !fixed || !shiftedRange(-1);
   $("range-next").disabled = !fixed || !shiftedRange(1);
   $("play").disabled = !fixed;
 }
 function setMode(mode) {
-  // keep looking at the same moment: the new range is the one containing the old one's start
-  const anchor = state.range ? state.range.start : (state.days.length ? state.days[state.days.length - 1] : null);
-  const fromAll = !state.range;
+  // keep looking at the same moment: the new range is the one containing the old one's LAST day, so
+  // Year -> Month -> Week -> Day narrows onto the most recent part of what you were looking at
+  const anchor = state.range ? new Date(state.range.end.getTime() - DAY_MS)
+    : (state.days.length ? state.days[state.days.length - 1] : null);
   state.mode = mode;
   state.range = anchor ? defaultRange(mode, anchor) : null;
-  // coming from "All", start on the latest *complete* week / month / year, not the few days of the current one
-  const full = { week: 7, month: 28, year: 365 }[mode];
-  if (fromAll && full && state.range && (state.range.end - state.range.start) / DAY_MS < full) {
+  // the data's last week / month is only a few days long: start on the latest complete one instead.
+  // The current year is kept (most of it is in), shown as "so far".
+  const full = { week: 7, month: 28 }[mode];
+  if (full && state.range && state.range.end >= dataEnd() && (state.range.end - state.range.start) / DAY_MS < full) {
     state.range = shiftedRange(-1) || state.range;
   }
   syncDateInputs();
   loadReveal();
 }
 function setRangeFromInputs() {
-  const a = $("range-start").value, b = $("range-end").value;
+  const a = $("range-start").value, b = $("range-end").hidden ? a : $("range-end").value;   // day: one box
   if (!a || !b) return;
   let s = new Date(`${a}T00:00:00Z`), e = new Date(`${b}T00:00:00Z`);
   if (e < s) [s, e] = [e, s];
@@ -656,14 +733,17 @@ function renderPredict() {
   const pred = sum("pred_mwh"), p10 = sum("p10_mwh"), p90 = sum("p90_mwh");
   const hasRange = scope.some((f) => f.hours.some((h) => h.p90_mwh != null));
   const total = pred.reduce((a, b) => a + b, 0);
-  $("pred-value").textContent = farms.length ? (total < 0.5 ? "≈ 0 MWh" : fmtEnergy(total)) : "No forecast";
+  countUp($("pred-value"), farms.length ? (total < 0.5 ? "≈ 0 MWh" : fmtEnergy(total)) : "No forecast");
   const issued = tm.issued_at ? new Date(tm.issued_at) : null;
   const stale = issued && Date.now() - issued.getTime() > 36 * 3600 * 1000;
   const sub = clear($("pred-sub"));
   if (hours.length) sub.append(`For ${dayFmt.format(new Date(hours[0]))} · issued ${shortFmt.format(issued)} UTC `);
   if (stale) sub.append(el("span", { class: "tag stale" }, "stale: older than 36 h"));
   if (farms.length && total < 0.5) sub.append(el("div", {}, "The model expects the cables to have room for this wind. " +
-    "The range shows how much could still be wasted if it's wrong."));
+    "The range shows how much could still be wasted if it's wrong. ",
+    el("button", { type: "button", class: "link-btn", onclick: () => {
+      $("tm").scrollIntoView({ behavior: "smooth", block: "start" }); $("tm-storm").click();
+    } }, "See how it did on the biggest storm →")));
   if (hasRange && hours.length) sub.append(el("div", {},
     `Likely range ${fmtEnergy(p10.reduce((a, b) => a + b, 0))} – ${fmtEnergy(p90.reduce((a, b) => a + b, 0))}` +
     (sel ? " (likely range, 80% of the time)" : " (adding up each farm's likely range, so approximate)")));
@@ -917,7 +997,7 @@ function deltaText(node, d, base, fmt, lowerIsGood = true) {
 
 function renderSim() {
   const r = state.simResult, s = r.scenario, b = r.baseline, d = r.delta;
-  $("sim-value").textContent = fmtEnergy(s.curtailed_twh * 1e6);
+  countUp($("sim-value"), fmtEnergy(s.curtailed_twh * 1e6));
   deltaText($("sim-delta"), d.curtailed_twh * 1e6, b.curtailed_twh * 1e6, fmtEnergy);
   const p1 = state.simPart1 && state.simPart1.totals.curtailed_twh;
   const sameData = state.simPart1 && state.simPart1.meta.source === r.meta.source;
@@ -1229,8 +1309,14 @@ function holdoutText(sc) {
   const h = sc.holdout && sc.holdout.capture_ratio;
   const f = h && h[`forecast/${apPlannerFor("forecast")}`], r = h && h[`reactive/${apPlannerFor("reactive")}`];
   if (f == null || r == null) return "";
-  return `On months the planning rules were not tuned on (${sc.holdout.months.join(", ")}): ` +
+  return `On months the planning rules were not tuned on (${monthSpan(sc.holdout.months)}): ` +
     `${fmtPct(f)} vs ${fmtPct(r)}.`;
+}
+
+// "seagreen_bess" -> "Seagreen battery"
+function batteryName(b) {
+  const f = b.farm_id && state.farms.find((x) => x.farm_id === b.farm_id);
+  return f ? `${farmName(b.farm_id)} battery` : b.battery_id;
 }
 
 function apLpCeiling() {
@@ -1240,18 +1326,24 @@ function apLpCeiling() {
 function renderScorecard() {
   const sc = state.ap.scorecard, res = apResults();
   const f = res.forecast, r = res.reactive;
-  $("ap-headline").textContent = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
+  const h = sc.holdout && sc.holdout.capture_ratio;
+  const hf = h && h[`forecast/${apPlannerFor("forecast")}`], hr = h && h[`reactive/${apPlannerFor("reactive")}`];
+  const held = hf != null && hr != null;   // the fair headline: months the planning rules never saw
+  const whole = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
+  countUp($("ap-headline"), held ? `${fmtPct(hf)} vs ${fmtPct(hr)}` : whole);
   const period = sc.period ? `${dayFmt.format(new Date(sc.period.start))} – ${dayFmt.format(new Date(new Date(sc.period.end) - 1))}` : "";
   $("ap-headline-sub").textContent = `Share of the best possible earnings a battery makes with our forecast vs with no forecast. ` +
-    `${sc.batteries.length} batteries, ${period}. ` +
+    `${sc.batteries.length} batteries. ` +
     (apLpCeiling() ? `"Best possible" = a battery that knows the future.`
       : `"Best possible" = the same rules, knowing what will happen that day.`) +
-    (holdoutText(sc) ? ` ${holdoutText(sc)}` : "");
+    (held ? ` Headline: ${monthSpan(sc.holdout.months)}, months the planning rules were never tuned on. ` +
+      `Bars and table below: the whole period, ${period} (${whole}), which includes the tuning months.`
+      : holdoutText(sc) ? ` ${holdoutText(sc)}` : "");
   const order = ["perfect", "forecast", "reactive", "do_nothing"].filter((k) => res[k]);
   hbars($("ap-ratio-bars"), order.map((k) => ({ id: k, label: STRATEGY_NAMES[k], value: res[k].capture_ratio,
     color: k === "forecast" ? C.planned : C.neutral })), { fmt: fmtPct });
   const t = clear($("ap-scorecard"));
-  t.append(el("thead", {}, el("tr", {}, el("th", {}, "Battery plans with"), el("th", { class: "num" }, "Wasted wind stored"),
+  t.append(el("thead", {}, el("tr", {}, el("th", {}, "Planned with"), el("th", { class: "num" }, "Wasted wind stored"),
     el("th", { class: "num" }, "Earned"), el("th", { class: "num" }, "Switch-off payments saved"))));
   const tb = el("tbody");
   for (const k of order) {
@@ -1261,7 +1353,7 @@ function renderScorecard() {
   }
   t.append(tb);
   $("ap-score-note").textContent = "Each battery can only store wind that was really wasted, and only sell when the cables south have room. Batteries tested: " +
-    sc.batteries.map((b) => `${b.battery_id} (${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh)`).join(", ") + ".";
+    sc.batteries.map((b) => `${batteryName(b)} (${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh)`).join(", ") + ".";
 }
 
 async function loadApDay() {
@@ -1394,7 +1486,7 @@ async function loadAutopilot() {
       apInit = true;
       const sel = clear($("ap-battery"));
       for (const b of state.ap.scorecard.batteries) sel.append(el("option", { value: b.battery_id },
-        `${b.battery_id} · ${b.zone === "north_scotland" ? "north of B4" : "between B4 and B6"} · ${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh`));
+        `${batteryName(b)} · ${b.zone === "north_scotland" ? "north of B4" : "between B4 and B6"} · ${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh`));
       state.ap.battery = (state.ap.scorecard.batteries[0] || {}).battery_id || null;
       sel.addEventListener("change", (e) => { state.ap.battery = e.target.value; loadApDay(); });
       $("ap-strategy").addEventListener("change", (e) => { state.ap.strategy = e.target.value; loadApDay(); });
@@ -1494,11 +1586,11 @@ function renderMethodBatteries(sc) {
     "only catch real waste and only sell when the cable south has room. Capture ratio = its revenue ÷ the revenue of " +
     (lp ? "the best schedule possible with perfect hindsight (a linear programme, a true ceiling)."
       : "the same rules given perfect knowledge of the day.") +
-    (sc.holdout ? ` The planning rules were tuned on other months; ${sc.holdout.months.join(", ")} are held out.` : "");
+    (sc.holdout ? ` The planning rules were tuned on other months; ${monthSpan(sc.holdout.months)} are held out.` : "");
   const bw = sc.band_weight, hold = sc.holdout && sc.holdout.capture_ratio;
   if (bw && hold && hold["forecast/lp_band"] != null && hold["forecast/lp"] != null) {
     $("method-basis").textContent += ` A third planner plans for waste between the likely value and the high end of the ` +
-      `forecast's range (weight ${bw.chosen}, chosen on ${bw.selected_on.join(", ")}), because the forecast's misses are storms ` +
+      `forecast's range (weight ${bw.chosen}, chosen on ${monthSpan(bw.selected_on)}), because the forecast's misses are storms ` +
       `above its range. On the held-out months it earns ${pct1(hold["forecast/lp_band"])} of the maximum, vs ` +
       `${pct1(hold["forecast/lp"])} for the plain optimiser.`;
   }
