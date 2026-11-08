@@ -53,7 +53,7 @@
     </div>
 
     <div class="hero">
-      <div class="label">Wasted wind power <span class="tag-est" title="Wind power that farms could have generated but were paid to switch off, because the cables carrying it south were full. Nobody publishes this per farm: we rebuilt it from the grid operator's switch-off instructions.">our estimate</span></div>
+      <div class="label">Wasted wind power <span class="tag-est t-est" title="Wind power that farms could have generated but were paid to switch off, because the cables carrying it south were full. Nobody publishes this per farm: we rebuilt it from the grid operator's switch-off instructions.">our estimate</span></div>
       <div id="hero-value" class="hero-value">–</div>
       <div id="hero-sub" class="sub"></div>
     </div>
@@ -65,7 +65,7 @@
     </div>
 
     <div class="block">
-      <h3>Which pinch point was full <span class="tag-est" title="Public data doesn't say which pinch point each switch-off was for, so this split is our best estimate">approximate</span></h3>
+      <h3>Which pinch point was full <span class="tag-est t-approx" title="Public data doesn't say which pinch point each switch-off was for, so this split is our best estimate">approximate</span></h3>
       <p class="note">Power from Scottish wind has to travel south on the grid. The power lines have two pinch points that can only carry so much: <b>B4</b>, between northern and southern Scotland, and <b>B6</b>, the border with England (dashed red lines on the map). When one is full, farms north of it are paid to switch off.</p>
       <div id="boundary-bar" class="segbar" role="img"></div>
       <div id="boundary-legend" class="legend"></div>
@@ -97,7 +97,7 @@
   <section id="tab-predict" class="tab" role="tabpanel" hidden>
     <p class="tab-intro">Our model predicts, the day before, how much wind will be wasted tomorrow, farm by farm.</p>
     <div class="hero">
-      <div class="label"><span id="pred-scope">Wind expected to be wasted tomorrow, all farms</span> <span class="tag-est">forecast</span> <span id="pred-fake" class="tag fake" hidden>fake data</span></div>
+      <div class="label"><span id="pred-scope">Wind expected to be wasted tomorrow, all farms</span> <span class="tag-est t-forecast">forecast</span> <span id="pred-fake" class="tag fake" hidden>fake data</span></div>
       <div id="pred-value" class="hero-value">–</div>
       <div id="pred-sub" class="sub"></div>
     </div>
@@ -136,7 +136,7 @@
       the numbers compare your scenario with what really happened.</p>
     <!-- results first: they change as the levers below move -->
     <div class="hero">
-      <div class="label">Wasted wind power in your scenario <span class="tag-est">simulated</span></div>
+      <div class="label">Wasted wind power in your scenario <span class="tag-est t-sim">simulated</span></div>
       <div id="sim-value" class="hero-value">–</div>
       <div id="sim-delta" class="delta"></div>
       <div id="sim-history" class="sub"></div>
@@ -284,7 +284,7 @@
     </fieldset>
 
     <div class="block">
-      <h3>Wind farms <span class="tag-est">rough</span></h3>
+      <h3>Wind farms <span class="tag-est t-approx">rough</span></h3>
       <p class="note">Waste is shared between farms the way it was in reality, so totals are more reliable than any single farm.</p>
       <div class="table-wrap"><table id="sim-farms" class="table"></table></div>
     </div>
@@ -293,7 +293,7 @@
     <p class="tab-intro">A battery next to the wind farms stores power that would be wasted and sells it later when the
       cables have room. Our forecast tells it when to be empty and ready. Every result is replayed against what really happened.</p>
     <div class="hero">
-      <div class="label">Battery earnings with our forecast vs without one <span class="tag-est">past months</span></div>
+      <div class="label">Battery earnings with our forecast vs without one <span class="tag-est t-est">past months</span></div>
       <div id="ap-headline" class="hero-value">–</div>
       <div id="ap-headline-sub" class="sub"></div>
     </div>
@@ -340,7 +340,7 @@
       <span id="method-version"></span></p>
 
     <div class="block">
-      <h3>History: wasted wind power <span class="tag-est">our estimate</span></h3>
+      <h3>History: wasted wind power <span class="tag-est t-est">our estimate</span></h3>
       <p class="note">Nobody publishes waste per farm. We rebuild it two independent ways.</p>
       <ul class="method-list">
         <li><b>Method A (market):</b> each farm tells the grid what it plans to generate (its Physical Notification).
@@ -355,7 +355,7 @@
     </div>
 
     <div class="block">
-      <h3>Forecast: tomorrow's waste <span class="tag-est">forecast</span></h3>
+      <h3>Forecast: tomorrow's waste <span class="tag-est t-forecast">forecast</span></h3>
       <p id="method-validation" class="note"></p>
       <div class="table-wrap"><table id="method-models" class="table"></table></div>
       <p class="note">Error = mean absolute error per farm-hour (lower is better). Caught = share of real waste
