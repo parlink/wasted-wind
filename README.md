@@ -76,9 +76,14 @@ Every figure's method and limitations are in the app's **Method** tab and in [do
 
 ## Run it
 
+You need **Python 3.13** (what we build and test with), **git**, and for the data download the
+**GitHub CLI** logged in (`gh auth login`).
+
 ```bash
 git clone https://github.com/parlink/wasted-wind.git
 cd wasted-wind
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 make fetch-data          # latest processed data and saved models (needs the GitHub CLI, logged in)
 make serve               # http://localhost:8000
@@ -86,7 +91,25 @@ make serve               # http://localhost:8000
 
 **No GitHub CLI?** Download every file from the [latest release](https://github.com/parlink/wasted-wind/releases/latest) into `data/processed/`, unzip `models.zip` there, then run `make serve` (or `python -m uvicorn app.server:app --port 8000`). Without any data, the app still runs on small built-in sample data and says so in a yellow banner.
 
-Without `gh` on your PATH (Windows): `make fetch-data GH="/c/Program Files/GitHub CLI/gh.exe"`. Without `make`, run the commands in the [Makefile](Makefile) directly. Use Chrome: the History month and week pickers use its native calendars.
+Without `gh` on your PATH (Windows): `make fetch-data GH="/c/Program Files/GitHub CLI/gh.exe"`. Use Chrome: the History month and week pickers use its native calendars.
+
+**Without `make`** (e.g. on Windows), the same steps by hand, with the virtual environment active:
+
+```bash
+gh release download -D data/processed --clobber -p "*"          # = make fetch-data, part 1
+python -c "import zipfile; zipfile.ZipFile('data/processed/models.zip').extractall('data/processed')"   # part 2
+python -m uvicorn app.server:app --port 8000                     # = make serve
+```
+
+**Live mode.** The forecast refreshes every hour and the batteries re-plan every half hour only while these
+two run, each in its own terminal next to the server (they need internet access):
+
+```bash
+python -m pipeline.live_forecast --every 60    # tomorrow and the next 5 days, from the newest weather
+python -m dispatch.live --every 30             # the batteries' live plans
+```
+
+Without them the app shows the last saved forecast and plans; the forecast is marked "stale" after 36 hours.
 
 To rebuild everything from raw data (needs network access; `make data` downloads 2+ years of records and takes a few hours the first time, `make model` about 15 minutes):
 
