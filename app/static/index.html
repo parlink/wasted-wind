@@ -57,19 +57,20 @@
       </div>
     </div>
   </header>
+  <p class="mission"><b>Scotland pays wind farms to switch off when its power lines are full.</b> We measure the
+    waste, forecast it, and use the forecast to run batteries. <button type="button" class="link-btn" id="about-open">How it works and the data</button></p>
   <nav class="tabs" role="tablist">
-    <button role="tab" data-tab="reveal" aria-selected="true">History</button>
-    <button role="tab" data-tab="predict" aria-selected="false">Forecast</button>
-    <button role="tab" data-tab="simulate" aria-selected="false">Simulate</button>
-    <button role="tab" data-tab="autopilot" aria-selected="false">Batteries</button>
-    <button role="tab" data-tab="method" aria-selected="false">Method</button>
+    <button role="tab" data-tab="reveal" aria-selected="true"><span class="tab-name"><i>1</i>History</span><span class="tab-sub">the waste</span></button>
+    <button role="tab" data-tab="predict" aria-selected="false"><span class="tab-name"><i>2</i>Forecast</span><span class="tab-sub">what's next</span></button>
+    <button role="tab" data-tab="autopilot" aria-selected="false"><span class="tab-name"><i>3</i>Batteries</span><span class="tab-sub">acting on it</span></button>
+    <button role="tab" data-tab="simulate" aria-selected="false"><span class="tab-name"><i>4</i>Simulate</span><span class="tab-sub">testing fixes</span></button>
+    <button role="tab" data-tab="method" aria-selected="false"><span class="tab-name">Method</span><span class="tab-sub">how &amp; data</span></button>
   </nav>
   <div id="error" class="error" hidden></div>
 
   <!-- ===== Reveal ===== -->
   <section id="tab-reveal" class="tab" role="tabpanel">
-    <p class="tab-intro">When the cables south are full, Scottish wind farms are paid to switch off. Here is how much
-      power was thrown away, where, and what it cost.</p>
+    <p class="tab-intro">How much wind power was thrown away, where, and what it cost. Pick a period, or click a farm.</p>
     <div class="filter-row">
       <div class="seg" role="group" aria-label="Time window">
         <button type="button" data-mode="all" aria-pressed="true">All</button>
@@ -363,6 +364,7 @@
     <p class="tab-intro">A battery next to the wind farms stores power that would be wasted and sells it later when the
       cables have room. Our forecast tells it when to be empty and ready. Every result is replayed against what really happened.</p>
     <div class="hero">
+      <p id="ap-plain" class="plain" hidden></p>
       <div class="label">Battery earnings with our forecast vs without one <span class="tag-est t-est">past months</span></div>
       <div id="ap-headline" class="hero-value">–</div>
       <div id="ap-headline-sub" class="sub"></div>
@@ -476,14 +478,61 @@
     <div class="block">
       <h3>Data sources</h3>
       <ul class="method-list">
-        <li><b>Elexon BMRS:</b> planned output (PN), turn-down instructions (BOALF), metered output, bid prices,
-          demand outturn and the day-ahead national demand forecast.</li>
+        <li><b>Elexon BMRS</b> (the GB electricity market's data service), for 50 wind units at 33 farms: planned
+          output (Physical Notifications, PN), every switch-off instruction (Bid-Offer Acceptances, BOALF), the price
+          each farm asked to switch off (Bid-Offer Data, BOD) and metered output (B1610). GB-wide: power prices (MID),
+          demand outturn and the day-ahead national demand forecast (NDF).</li>
         <li><b>NESO:</b> limits and flows for the B4 and B6 pinch points.</li>
         <li><b>Open-Meteo:</b> historical wind, archived day-ahead forecasts ("previous runs") and the live forecast at each farm.</li>
       </ul>
     </div>
   </section>
 </aside>
+
+
+<!-- What this is, in plain English: shown on the first visit, reopened from "How it works" -->
+<div id="about" class="about" role="dialog" aria-modal="true" aria-labelledby="about-title" hidden>
+  <div class="about-card">
+    <button type="button" class="about-x" id="about-close" aria-label="Close">✕</button>
+    <h2 id="about-title">Scotland throws away wind power. We predict it, and act on it.</h2>
+    <p class="about-lead">When the power lines from Scotland to England are full, the grid operator <b>pays Scottish wind
+      farms to switch off</b>, then burns gas in England to make up the power. Since January 2024 that has wasted
+      <b id="about-twh">about 25 TWh</b>, cost <b id="about-paid">hundreds of millions of pounds</b> in payments, and
+      <b id="about-gas">more</b> in replacement gas. Nobody publishes this farm by farm, so we rebuilt it.</p>
+
+    <h3>What this site does, in four steps</h3>
+    <ol class="about-steps">
+      <li data-go="reveal"><b>1 History: what was wasted.</b> For 33 Scottish wind farms, every half hour since 2024:
+        how much wind was switched off, where, which power line was full, and what it cost.</li>
+      <li data-go="predict"><b>2 Forecast: what's coming.</b> Each morning a machine-learning model predicts tomorrow's
+        waste for every farm, with an outlook to 6 days, using only what was known at the time.</li>
+      <li data-go="autopilot"><b>3 Batteries: acting on it.</b> An autopilot turns the forecast into charge, hold or
+        sell decisions every half hour, with no human input, and is scored in £ against what really happened.</li>
+      <li data-go="simulate"><b>4 Simulate: testing fixes.</b> Bigger power lines, an undersea cable, batteries or new
+        demand in Scotland: see how much less wind would be wasted.</li>
+    </ol>
+
+    <h3>Where the data comes from (all public)</h3>
+    <ul class="about-data">
+      <li><b>Elexon</b> (runs the GB electricity market; its BMRS data service), for 50 wind units at 33 farms: what
+        each farm <i>planned</i> to generate, every instruction from the grid to <i>switch off</i>, the <i>price</i>
+        each farm asked to be paid for it, and what it <i>actually</i> generated. Plus GB power prices, electricity
+        demand and the day-ahead demand forecast.</li>
+      <li><b>NESO</b> (the National Energy System Operator, who runs the grid): the daily limit and flow on the two
+        bottlenecks, <b>B4</b> (northern to southern Scotland) and <b>B6</b> (Scotland to England).</li>
+      <li><b>Open-Meteo</b>: wind at turbine height and temperature at every farm, including weather forecasts
+        <i>exactly as they were issued</i> 1 to 7 days earlier, so every test of our forecast is honest.</li>
+    </ul>
+    <p class="about-how">Waste = what a farm planned minus what it was allowed to generate, checked a second way from
+      wind speed and each farm's power curve. Cost = the farms' own switch-off prices, plus the gas burned instead.
+      Details and limitations: the <a href="#" data-go="method">Method</a> tab.</p>
+
+    <div class="about-actions">
+      <button type="button" class="btn-primary" id="about-tour">▶ Take the 2-minute tour</button>
+      <button type="button" class="btn-secondary" id="about-explore">Explore myself</button>
+    </div>
+  </div>
+</div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>

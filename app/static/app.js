@@ -483,6 +483,7 @@ async function loadReveal() {
     const q = windowParams();
     const [reveal, boundaries] = await Promise.all([api(`/api/reveal/summary${q}`), api(`/api/reveal/boundaries${q}`)]);
     state.reveal = reveal; state.boundaries = boundaries;
+    if (!q) { state.revealAll = reveal; fillAbout(); }
     noteSource("wind farm waste", reveal.meta);
     renderReveal();
     updateMap();
@@ -1435,6 +1436,13 @@ function renderScorecard() {
   const hf = h && h[`forecast/${apPlannerFor("forecast")}`], hr = h && h[`reactive/${apPlannerFor("reactive")}`];
   const held = hf != null && hr != null;   // the fair headline: months the planning rules never saw
   const whole = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
+  if (held && hr > 0) {
+    const more = hf / hr - 1;
+    $("ap-plain").textContent = more > 0
+      ? `With our forecast, a battery earns about ${Math.round(more * 100)}% more than the same battery without one.`
+      : "On these months our forecast did not help the battery earn more.";
+    $("ap-plain").hidden = false;
+  }
   countUp($("ap-headline"), held ? `${fmtPct(hf)} vs ${fmtPct(hr)}` : whole);
   const period = sc.period ? `${dayFmt.format(new Date(sc.period.start))} – ${dayFmt.format(new Date(new Date(sc.period.end) - 1))}` : "";
   $("ap-headline-sub").textContent = `Share of the best possible earnings a battery makes with our forecast vs with no forecast. ` +
@@ -1824,7 +1832,39 @@ function setTab(tab) {
   else { if (tab === "method") loadMethod().catch(showError); updateMap(); }
 }
 
+// ---------- "How it works": the plain-English story and the data, shown on the first visit ----------
+function showAbout(open) {
+  $("about").hidden = !open;
+  if (!open) try { localStorage.setItem("ww-about-seen", "1"); } catch (_) { /* private mode */ }
+}
+function fillAbout() {   // the headline figures, from the History totals over all the data
+  const t = state.revealAll && state.revealAll.totals;
+  if (!t) return;
+  $("about-twh").textContent = fmtEnergy(t.curtailed_twh * 1e6);
+  $("about-paid").textContent = fmtCompact(Math.abs(t.payments_gbp), "£");
+  $("about-gas").textContent = `${fmtCompact(t.replacement_gas_gbp, "£")}`;
+}
+function initAbout() {
+  $("about-open").addEventListener("click", () => showAbout(true));
+  $("about-close").addEventListener("click", () => showAbout(false));
+  $("about-explore").addEventListener("click", () => showAbout(false));
+  $("about").addEventListener("click", (e) => { if (e.target === $("about")) showAbout(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("about").hidden) showAbout(false); });
+  $("about").querySelectorAll("[data-go]").forEach((n) => n.addEventListener("click", (e) => {
+    e.preventDefault(); showAbout(false); setTab(n.dataset.go);
+  }));
+  $("about-tour").addEventListener("click", () => {
+    showAbout(false);
+    const b = document.querySelector('[data-tour-start="1"]');
+    if (b) b.click();
+  });
+  let seen = false;
+  try { seen = localStorage.getItem("ww-about-seen") === "1"; } catch (_) { /* show it */ }
+  if (!seen && !/[?&]notour\b/.test(location.search)) showAbout(true);
+}
+
 async function boot() {
+  initAbout();
   document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.addEventListener("click", () => { stopPlay(); setMode(b.dataset.mode); }));
   $("play").addEventListener("click", togglePlay);
