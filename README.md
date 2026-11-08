@@ -29,7 +29,7 @@ You need **Python 3.13** (what we build and test with), **git**, Chrome or Edge,
 git clone https://github.com/parlink/wasted-wind.git
 cd wasted-wind
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scriptsctivate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 make fetch-data                    # latest processed data and saved forecast models
 make serve                         # http://localhost:8000
