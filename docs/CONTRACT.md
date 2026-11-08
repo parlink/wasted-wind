@@ -98,6 +98,7 @@ and the live "tomorrow" forecast. Primary key: (`farm_id`, `hour_start`, `issued
 | `baseline_climatology_mwh` | float | Farm's mean for that hour-of-day and month. |
 | `baseline_wind_rule_mwh` | float | One-line threshold rule on Scottish forecast potential. |
 | `model_version` | str | e.g. `lgbm-2026-11-07a`. |
+| `training_days` | int, nullable | Days of history the model behind this row was trained on (#50). `backtest`: that month's fold (about 115 for July 2024, growing each month). `live`: the full history. Missing in files built before data-v15. |
 
 The dispatcher works in half hours: split each hourly value equally into its two half hours.
 
@@ -121,6 +122,10 @@ The dispatcher works in half hours: split each hourly value equally into its two
 Also present (added in #5/#14, extra keys are allowed): `ablations` (e.g. `lightgbm_without_neso_limits`,
 same metric keys as `models`), `interval` (`coverage_p10_p90`, `coverage_on_waste_hours`, …) and
 `notes` (list of strings). `shap_top_signals` is mean |SHAP| on each fold's held-out month.
+`extended_backtest` (#50): the walk-forward runs from 2024-07 (`forecast.parquet` backtest rows cover it all),
+but `models`, `interval`, `ablations` and SHAP above score only the **last 6 months**, so the headline doesn't
+move. `extended_backtest` has `validation`, `models` (same keys, over every month), `by_month_mae_mwh` and
+`training_days_by_month`.
 `ablations.lightgbm_with_orderbook` (#51): the main model plus the order-book signals, same folds.
 `price_model` (#51, written by `pipeline/price.py`, which must run **after** `pipeline/train.py`): `validation`,
 `mae_model_gbp_mwh`, `mae_7day_gbp_mwh` (the dispatcher's 7-day mean), `by_month` and `features`.
@@ -201,6 +206,12 @@ and `caveats`. `schedules.parquet` likewise has `perfect/lp` rows.
 `holdout_capture_ratio_price_forecast`, `revenue_gbp_7day`, `revenue_gbp_price_forecast`,
 `battery_days_with_price_forecast`, `battery_days_fallback_7day` and `months_with_price_forecast`. The hold-out
 figures use the price forecast on every day (the scorecard refuses to write them otherwise).
+`period`, `results` and `holdout` stay on the headline window (the tuning plus hold-out months, 2026-05 to 2026-10).
+`extended_backtest` (#50, when the forecast backtest starts earlier): `period`, `capture_ratio`, `revenue_gbp`
+per strategy/dispatcher for the months **before** that window, with the same batteries and settings (tuned on
+the later tuning months, so said in its `note`). `schedules.parquet` backtest rows cover both periods, so
+`/api/autopilot/schedule?date=` works back to 2024-07. The two replays are separate (state of charge restarts
+at 0 on 2026-05-01).
 
 ## 6. Python interfaces across the A/B boundary
 

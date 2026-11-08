@@ -97,7 +97,7 @@ METRICS = ROOT / "data" / "processed" / "model_metrics.json"
 FC_COLS = ["farm_id", "zone", "hour_start", "issued_at", "split", "curtailed_mwh_pred",
            "curtailed_mwh_p10", "curtailed_mwh_p90", "curtailed_mwh_actual",
            "baseline_persistence_mwh", "baseline_climatology_mwh", "baseline_wind_rule_mwh",
-           "model_version"]
+           "model_version", "training_days"]       # training_days: #50
 
 
 @pytest.mark.skipif(not FC.exists(), reason="forecast.parquet not built")
@@ -110,6 +110,9 @@ def test_forecast_output_matches_contract():
     assert (bt.issued_at <= bt.hour_start - pd.Timedelta(hours=14)).all()   # D-1 10:00
     assert (live.issued_at < live.hour_start).all() and live.curtailed_mwh_actual.isna().all()
     assert not fc.duplicated(["farm_id", "hour_start", "issued_at"]).any()
+    assert (fc.training_days >= 1).all()          # every row says how much history stood behind it
+    first = bt.groupby(bt.hour_start.dt.strftime("%Y-%m")).training_days.first()
+    assert first.is_monotonic_increasing             # later folds train on more history
     m = json.loads(METRICS.read_text())
     assert set(m["models"]) == {"lightgbm", "persistence", "climatology", "wind_rule"}
 
