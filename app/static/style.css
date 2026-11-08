@@ -451,3 +451,22 @@ details.explain[open] summary { margin-bottom: 4px; }
 .decision-log .what { font-weight: 500; color: var(--ink); }
 .decision-log .why { display: block; font-size: 11.5px; color: var(--muted); margin-top: 1px; }
 .decision-log .why::first-letter { text-transform: uppercase; }
+
+/* intro v3: few words, big numbers, every page the same height */
+.about-card { min-height: 560px; display: flex; flex-direction: column; padding: 34px 40px 26px; }
+.about-card .about-nav { margin-top: auto; padding-top: 22px; }
+.about-card h2 { font-size: 32px; margin-bottom: 12px; }
+.about-lead { font-size: 18px; }
+.about-big { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 26px 0 18px; }
+.about-big > div { background: var(--surface); border-radius: var(--r-md); box-shadow: var(--shadow-card); padding: 18px 18px 16px;
+  display: flex; flex-direction: column; gap: 6px; }
+.about-big b { font-size: 38px; font-weight: 700; letter-spacing: -0.03em; line-height: 1; color: var(--ink); }
+.about-page[data-page="1"] .about-big > div:first-child b { color: var(--waste); }
+.about-page[data-page="2"] .about-big b { color: var(--planned); }
+.about-big span { font-size: 14px; color: var(--ink-2); }
+.about-since { font-size: 16px; color: var(--ink-2); margin: 0; }
+.about-proof { font-size: 16px; }
+.about-steps li { font-size: 15px; display: flex; gap: 10px; }
+.about-steps li b { min-width: 104px; }
+.about-data { list-style: none; padding: 0; margin: 18px 0 0; font-size: 14px; color: var(--muted); }
+.about-data b { color: var(--ink-2); margin-right: 8px; }

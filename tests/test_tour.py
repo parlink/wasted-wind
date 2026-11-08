@@ -90,10 +90,10 @@ def test_set_values_match_real_options_and_dates_are_iso():
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", v)
 
 
-def test_the_site_shows_only_tour_1_and_tour_2_and_no_track_names():
+def test_the_site_shows_the_two_tours_by_purpose_and_no_track_names():
     menu = _block(HTML, 'id="tour-menu"', "</header>")
     text = re.sub(r"<[^>]+>", " ", menu)
-    assert "Tour 1" in text and "Tour 2" in text
+    assert "Quick story" in text and "Deep dive" in text   # tour 2 and tour 1, named by what they are
     banned = re.compile(r"hrt|g-research|g research|judge|pitch", re.I)
     shown = [text] + [_unescape(l) for t in _tours().values()
                       for l in re.findall(r'label: "((?:[^"\\]|\\.)*)"', t)]

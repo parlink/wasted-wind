@@ -51,7 +51,8 @@ function noteSource(part, meta) {
   banner.hidden = fakeParts.size === 0;
   banner.textContent = fakeParts.size
     ? `Fake data (app/fixtures) in: ${[...fakeParts].join(", ")}. Real numbers arrive with Person A's data releases.` : "";
-  tag.textContent = fakeParts.size ? (fakeParts.has("wind farm waste") ? "fake data" : "partly fake data") : `data ${meta.data_version}`;
+  const upTo = state.days.length ? ` · to ${dayFmt.format(state.days[state.days.length - 1])}` : "";
+  tag.textContent = fakeParts.size ? (fakeParts.has("wind farm waste") ? "fake data" : "partly fake data") : `Real grid data${upTo}`;
   tag.className = "tag" + (fakeParts.size ? " fake" : "");
 }
 const $ = (id) => document.getElementById(id);
@@ -1998,22 +1999,15 @@ async function fillStorm() {   // the storm day's figures, live from the same AP
     $("storm-twh").textContent = fmtEnergy(cut);
     $("storm-paid").textContent = fmtCompact(Math.abs(t.payments_gbp), "£");
     $("storm-gas").textContent = fmtCompact(t.replacement_gas_gbp, "£");
-    $("storm-co2").textContent = `${fmtCompact(t.co2_t)} t`;
-    if (pot > 0) { $("storm-share").textContent = fmtPct(cut / pot); $("storm-potential").textContent = fmtEnergy(pot); }
-    const whole = r.farms.filter((f) => f.share_wasted >= 0.99).sort((a, b) => b.curtailed_mwh - a.curtailed_mwh);
-    if (whole.length >= 2) {
-      const names = whole.slice(0, 3).map((f) => farmName(f.farm_id));
-      $("storm-farms").textContent = `${whole.length} farms, including ${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}, ` +
-        "were switched off for the whole day.";
-    }
+    if (pot > 0) $("storm-share").textContent = fmtPct(cut / pot);
     if (bt && bt.series.length) {
       const pred = bt.series.reduce((a, x) => a + (x.pred_mwh || 0), 0), act = bt.series.reduce((a, x) => a + (x.actual_mwh || 0), 0);
       $("about-proof").innerHTML = "";
+      $("about-proof").append(el("b", {}, "Did we see 27 October coming? "),
+        `Yes: the day before, we forecast ${fmtEnergy(pred)}. ${fmtEnergy(act)} was wasted.`);
       const g = batteryGain(sc, "lp");
-      $("about-proof").append(
-        el("p", {}, el("b", {}, "Did we see 27 October coming? "),
-          `Yes. At 10:00 the day before, our forecast said ${fmtEnergy(pred)} would be wasted on 27 October. ${fmtEnergy(act)} was.`),
-        ...(g ? [el("p", {}, el("b", {}, "Does acting on it pay? "), g.main), el("p", { class: "small" }, g.note)] : []));
+      const big = document.querySelectorAll('.about-page[data-page="2"] .about-big b')[2];
+      if (g && big && g.more > 0) big.textContent = `+${Math.round(g.more * 100)}%`;
     }
   } catch (_) { stormFilled = false; }
 }
@@ -2035,7 +2029,7 @@ function initAbout() {
   }));
   $("about-tour").addEventListener("click", () => {
     showAbout(false);
-    const b = document.querySelector('[data-tour-start="1"]');
+    const b = document.querySelector('[data-tour-start="2"]');   // the quick story suits a first visit
     if (b) b.click();
   });
   let seen = false;
@@ -2071,7 +2065,7 @@ async function boot() {
     for (let d = new Date(start); d < end; d = new Date(d.getTime() + 86400000)) state.days.push(d);
     syncDateInputs();
     noteSource("wind farm waste", health.meta);
-    $("source-tag").title = `Generated ${health.meta.generated_at}`;
+    $("source-tag").title = `Data release ${health.meta.data_version}, generated ${health.meta.generated_at}`;
     // The panel must never wait on map tiles (venue Wi-Fi): load both, draw the map when ready.
     initMap().then(updateMap).catch((e) => console.warn("map failed to load", e));
     await loadReveal();
