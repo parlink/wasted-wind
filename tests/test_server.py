@@ -251,3 +251,14 @@ def test_week_endpoint_and_tomorrow_stays_the_day_ahead():
     total = sum(h["pred_mwh"] for f in t["farms"] for h in f["hours"])
     assert d0["pred_mwh"] == pytest.approx(total)
     assert _ok("/api/forecast/tomorrow?lead_days=1")["farms"] == t["farms"]
+
+
+def test_week_can_follow_one_farm():
+    # the 6-day strip shows the same scope as the big number: all farms, or the selected farm
+    t = _ok("/api/forecast/tomorrow")
+    f = t["farms"][0]
+    w = _ok(f"/api/forecast/week?farm_id={f['farm_id']}")
+    assert w["farm_id"] == f["farm_id"]
+    assert w["days"][0]["pred_mwh"] == pytest.approx(sum(h["pred_mwh"] for h in f["hours"]))
+    assert _ok("/api/forecast/week")["farm_id"] is None
+    assert client.get("/api/forecast/week?farm_id=no_such_farm").status_code == 404
