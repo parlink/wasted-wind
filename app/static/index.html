@@ -113,7 +113,9 @@
 
   <!-- ===== Predict ===== -->
   <section id="tab-predict" class="tab" role="tabpanel" hidden>
-    <p class="tab-intro">Each morning our model predicts how much wind will be wasted tomorrow, farm by farm.</p>
+    <p class="tab-intro">Each morning our model predicts how much wind will be wasted over the next 6 days, farm by farm.</p>
+    <div id="week-strip" class="week-strip" role="tablist" aria-label="Day to show" hidden></div>
+    <p id="week-note" class="note" hidden></p>
     <div class="hero">
       <div class="label"><span id="pred-scope">Wind expected to be wasted tomorrow, all farms</span> <span class="tag-est t-forecast">forecast</span> <span id="pred-fake" class="tag fake" hidden>fake data</span></div>
       <div id="pred-value" class="hero-value">–</div>

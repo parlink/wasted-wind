@@ -188,6 +188,7 @@ def _load(signature: tuple, source: str) -> Inputs:
 
     # forecast waste per farm-hour: only the day-ahead issue (by D-1 10:00 UTC), never later ones
     if len(fc):
+        fc = fc[data.lead_days(fc) == 1]          # #49: live rows now run 6 days ahead; plan on the day-ahead
         cutoff = fc["hour_start"].dt.normalize() - pd.Timedelta(hours=14)
         fc = fc[fc["issued_at"] <= cutoff]
     f = fc.sort_values("issued_at").drop_duplicates(["farm_id", "hour_start"], keep="last")

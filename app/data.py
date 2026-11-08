@@ -104,3 +104,11 @@ def signature(*names: str, source: str | None = None) -> tuple:
         p, s = resolve(n, source)
         out.append((n, s, p.stat().st_mtime))
     return tuple(out)
+
+
+def lead_days(fc: pd.DataFrame) -> pd.Series:
+    """#49: days between a forecast's issue date and the day it is for (1 = the day-ahead).
+    The `lead_days` column if present, else derived (fixtures and files before data-v15)."""
+    if "lead_days" in fc:
+        return fc["lead_days"].astype(int)
+    return (fc["hour_start"].dt.normalize() - fc["issued_at"].dt.normalize()).dt.days

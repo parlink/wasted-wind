@@ -97,7 +97,7 @@ METRICS = ROOT / "data" / "processed" / "model_metrics.json"
 FC_COLS = ["farm_id", "zone", "hour_start", "issued_at", "split", "curtailed_mwh_pred",
            "curtailed_mwh_p10", "curtailed_mwh_p90", "curtailed_mwh_actual",
            "baseline_persistence_mwh", "baseline_climatology_mwh", "baseline_wind_rule_mwh",
-           "model_version", "training_days"]       # training_days: #50
+           "model_version", "training_days", "lead_days"]       # training_days: #50, lead_days: #49
 
 
 @pytest.mark.skipif(not FC.exists(), reason="forecast.parquet not built")
@@ -111,6 +111,9 @@ def test_forecast_output_matches_contract():
     assert (live.issued_at < live.hour_start).all() and live.curtailed_mwh_actual.isna().all()
     assert not fc.duplicated(["farm_id", "hour_start", "issued_at"]).any()
     assert (fc.training_days >= 1).all()          # every row says how much history stood behind it
+    assert (bt.lead_days == 1).all() and set(live.lead_days) <= set(range(1, 7))
+    assert ((live.hour_start.dt.normalize() - live.issued_at.dt.normalize()).dt.days == live.lead_days).all()
+    assert live.loc[live.lead_days > 1, "curtailed_mwh_p90"].isna().all()   # only the day-ahead band is calibrated
     first = bt.groupby(bt.hour_start.dt.strftime("%Y-%m")).training_days.first()
     assert first.is_monotonic_increasing             # later folds train on more history
     m = json.loads(METRICS.read_text())
@@ -192,6 +195,7 @@ def test_band_is_ordered_and_non_negative():
 @pytest.mark.skipif(not FC.exists(), reason="forecast.parquet not built")
 def test_built_band_matches_contract():
     fc = pd.read_parquet(FC)
+    fc = fc[fc.lead_days == 1] if "lead_days" in fc else fc      # #49: only the day-ahead has a band
     assert fc.curtailed_mwh_p10.notna().all() and fc.curtailed_mwh_p90.notna().all()
     assert (fc.curtailed_mwh_p10 <= fc.curtailed_mwh_p90 + 1e-9).all() and (fc.curtailed_mwh_p10 >= 0).all()
     m = json.loads(METRICS.read_text())
