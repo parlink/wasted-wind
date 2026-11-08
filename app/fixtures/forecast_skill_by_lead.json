@@ -1,0 +1,53 @@
+{
+  "chart": [
+    {
+      "lead_days": 1,
+      "mae_mwh": 19.059,
+      "baseline_mae_mwh": 38.303,
+      "wind_rule_mae_mwh": 24.116,
+      "recall": 0.82,
+      "n": 145728
+    },
+    {
+      "lead_days": 2,
+      "mae_mwh": 22.3,
+      "baseline_mae_mwh": 38.303,
+      "wind_rule_mae_mwh": 25.293,
+      "recall": 0.808,
+      "n": 145728
+    },
+    {
+      "lead_days": 3,
+      "mae_mwh": 26.21,
+      "baseline_mae_mwh": 38.303,
+      "wind_rule_mae_mwh": 27.071,
+      "recall": 0.765,
+      "n": 145728
+    },
+    {
+      "lead_days": 4,
+      "mae_mwh": 30.997,
+      "baseline_mae_mwh": 38.303,
+      "wind_rule_mae_mwh": 28.566,
+      "recall": 0.695,
+      "n": 145728
+    },
+    {
+      "lead_days": 5,
+      "mae_mwh": 34.658,
+      "baseline_mae_mwh": 38.303,
+      "wind_rule_mae_mwh": 31.245,
+      "recall": 0.632,
+      "n": 145728
+    },
+    {
+      "lead_days": 6,
+      "mae_mwh": 36.919,
+      "baseline_mae_mwh": 38.303,
+      "wind_rule_mae_mwh": 32.169,
+      "recall": 0.596,
+      "n": 145728
+    }
+  ],
+  "note": "copied from data-v14"
+}

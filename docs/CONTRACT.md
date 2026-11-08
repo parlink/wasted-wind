@@ -130,6 +130,13 @@ move. `extended_backtest` has `validation`, `models` (same keys, over every mont
 `price_model` (#51, written by `pipeline/price.py`, which must run **after** `pipeline/train.py`): `validation`,
 `mae_model_gbp_mwh`, `mae_7day_gbp_mwh` (the dispatcher's 7-day mean), `by_month` and `features`.
 
+### `data/processed/forecast_skill_by_lead.json` (A writes, `pipeline/lead_skill.py`, #49)
+
+Forecast error by days ahead (1-6; 7 would need an 8-day-old weather run). `chart` is one row per
+lead: `{"lead_days": 1, "mae_mwh": 19.06, "baseline_mae_mwh": 38.30, "wind_rule_mae_mwh": 24.12,
+"recall": 0.82, "n": 145728}`, where `baseline_mae_mwh` = climatology and MAE is in MWh per farm-hour.
+`leads` has the full scores per model, plus a lead-1-without-NESO-limits reference row.
+
 ### `data/processed/price_forecast.parquet` (A writes, `pipeline/price.py`, #51)
 
 Half-hourly GB market price forecast, walk-forward, issued at D-1 10:00 UTC from data known then.
@@ -250,7 +257,7 @@ Every response body includes:
 | `GET /api/reveal/boundaries?start&end` | `{"boundaries": [{"boundary": "B4", "share_periods_binding": 0.42, "approximate": true}]}` |
 | `GET /api/forecast/tomorrow` | `{"issued_at", "farms": [{"farm_id", "hours": [{"hour_start", "pred_mwh", "p10_mwh", "p90_mwh"}]}]}` |
 | `GET /api/forecast/backtest?farm_id&start&end` | `{"farm_id", "series": [{"hour_start", "pred_mwh", "actual_mwh", "persistence_mwh", "climatology_mwh", "wind_rule_mwh"}]}` |
-| `GET /api/forecast/metrics` | contents of `model_metrics.json` |
+| `GET /api/forecast/metrics` | contents of `model_metrics.json`, plus `skill_by_lead`: the `chart` rows of `forecast_skill_by_lead.json`, or `null` if not built |
 | `GET /api/autopilot/schedule?date&battery_id` | `{"plan_issued_at", "live": bool, "batteries": [{"battery_id", "steps": [{"period_start", "action", "power_mw", "soc_mwh", "reason"}]}]}` |
 | `GET /api/autopilot/scorecard` | contents of `scorecard.json` |
 | `POST /api/scenario` | scenario results, below |
