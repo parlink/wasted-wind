@@ -230,14 +230,19 @@ def forecast_tomorrow(lead_days: int = Query(1, ge=1, le=7)):
 
 
 @app.get("/api/forecast/week")
-def forecast_week():
-    """#49: one row per live day, all farms summed: the forecast and the summed hourly p10/p90
-    (a sum of farm-hour ranges, not a band for the day). kind = "outlook" from the first lead where the
-    simple wind rule beat the model in the backtest (forecast_skill_by_lead.json), else "forecast"."""
+def forecast_week(farm_id: Optional[str] = None):
+    """#49: one row per live day, all farms summed (or one farm, with farm_id, so the strip shows the same
+    scope as the selected farm's numbers): the forecast and the summed hourly p10/p90 (a sum of farm-hour
+    ranges, not a band for the day). kind = "outlook" from the first lead where the simple wind rule beat the
+    model in the backtest (forecast_skill_by_lead.json), else "forecast"."""
     fc, src = data.table("forecast.parquet")
     live = _latest_live(fc)
     if live.empty:
-        return {"issued_at": None, "days": [], "meta": meta(src, note="no live forecast available")}
+        return {"issued_at": None, "farm_id": farm_id, "days": [], "meta": meta(src, note="no live forecast available")}
+    if farm_id is not None:
+        live = live[live["farm_id"] == farm_id]
+        if live.empty:
+            raise HTTPException(404, f"no live forecast for farm_id {farm_id!r}")
     skill = _skill_by_lead(src) or []
     outlook_from = min((r["lead_days"] for r in skill if r["wind_rule_mae_mwh"] < r["mae_mwh"]), default=None)
     g = live.groupby("lead_days").agg(date=("hour_start", "min"), pred_mwh=("curtailed_mwh_pred", "sum"))
@@ -248,8 +253,8 @@ def forecast_week():
              "p10_mwh": opt(r.curtailed_mwh_p10), "p90_mwh": opt(r.curtailed_mwh_p90),
              "kind": "outlook" if outlook_from is not None and k >= outlook_from else "forecast"}
             for k, r in g.sort_index().iterrows()]
-    return {"issued_at": iso(live["issued_at"].max()), "outlook_from_lead": outlook_from, "days": days,
-            "meta": meta(src)}
+    return {"issued_at": iso(live["issued_at"].max()), "farm_id": farm_id, "outlook_from_lead": outlook_from,
+            "days": days, "meta": meta(src)}
 
 
 @app.get("/api/forecast/backtest")

@@ -132,6 +132,7 @@
   <!-- ===== Predict ===== -->
   <section id="tab-predict" class="tab" role="tabpanel" hidden>
     <p class="tab-intro">Each morning our model predicts how much wind will be wasted over the next 6 days, farm by farm.</p>
+    <div id="week-scope" class="week-scope" hidden></div>
     <div id="week-strip" class="week-strip" role="tablist" aria-label="Day to show" hidden></div>
     <p id="week-note" class="note" hidden></p>
     <div class="hero">
@@ -143,7 +144,7 @@
     <div class="chart-box"><canvas id="tomorrow-chart" aria-label="Tomorrow's hourly forecast"></canvas></div>
 
     <div class="block">
-      <h3>Tomorrow, farm by farm</h3>
+      <h3 id="pred-table-title">Tomorrow, farm by farm</h3>
       <div class="table-wrap"><table id="pred-table" class="table"></table></div>
     </div>
 

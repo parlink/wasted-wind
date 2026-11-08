@@ -349,6 +349,7 @@ details.explain[open] summary { margin-bottom: 4px; }
 .hero-value, .tile .value { font-variant-numeric: tabular-nums; }
 
 /* #49: the next 6 days, one card per day; outlook days (less reliable) are dashed */
+.week-scope { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 2px 0 6px; display: flex; gap: 10px; align-items: baseline; }
 .week-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 4px 0 14px; }   /* 2 rows of 3: a row of 6 is too narrow for "1.6 MWh" */
 .week-day { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 7px 8px; border-radius: 9px;
   background: var(--surface); border: 1px solid var(--border); cursor: pointer; font: inherit; min-width: 0; }

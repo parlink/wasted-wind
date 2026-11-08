@@ -226,6 +226,12 @@ const crosshair = {
   },
 };
 
+// Decimals for an axis whose largest label is maxAbs, so small values don't all read "0" (0.004 MWh -> 4 decimals)
+function axisDecimals(maxAbs) {
+  if (!(maxAbs > 0) || maxAbs >= 10) return 0;
+  return Math.min(4, Math.max(1, Math.ceil(-Math.log10(maxAbs)) + 1));
+}
+
 function lineChart(id, labels, datasets, { yLabel, tooltipLabel } = {}) {
   if (charts[id]) charts[id].destroy();
   charts[id] = new Chart($(id), {
@@ -252,7 +258,7 @@ function lineChart(id, labels, datasets, { yLabel, tooltipLabel } = {}) {
         y: { beginAtZero: true, grid: { color: C.grid }, border: { display: false },
              title: { display: !!yLabel, text: yLabel, color: C.muted, font: { size: 11 } },
              ticks: { color: C.muted, font: { size: 11 }, maxTicksLimit: 5,
-                      callback: (v) => nf(Math.abs(v) >= 10 ? 0 : 2).format(v) } },
+                      callback: (v, i, ticks) => nf(axisDecimals(Math.max(...ticks.map((t) => Math.abs(t.value))))).format(v) } },
       },
     },
   });
@@ -650,6 +656,7 @@ function selectFarm(id) {
     if (state.farm) $("farm-detail").scrollIntoView({ behavior: "smooth", block: "start" });
   } else if (state.tab === "predict" && state.tomorrow) {
     renderPredict(); if (tmInit && state.tm.date) renderTimeMachine();
+    if ((state.farm || null) !== state.weekFarm) loadWeek().catch(showError);   // the strip follows the farm
   }
 }
 
@@ -750,12 +757,23 @@ function renderLeadSkill(rows) {
     `the weather archive keeps old forecasts.`;
 }
 
+// The strip shows the same scope as the big number below it: all farms, or the farm selected on the map / list.
+async function loadWeek() {
+  const farm = state.farm || null;
+  state.week = await api(`/api/forecast/week${farm ? `?farm_id=${encodeURIComponent(farm)}` : ""}`).catch(() => null);
+  state.weekFarm = farm;
+  renderWeek();
+}
+
 // #49: the next 6 days. Day 1 (tomorrow) is the day-ahead forecast every other number on the tab is about.
 function renderWeek() {
-  const w = state.week, strip = clear($("week-strip"));
+  const w = state.week, strip = clear($("week-strip")), scope = clear($("week-scope"));
   const days = (w && w.days) || [];
-  strip.hidden = $("week-note").hidden = days.length < 2;
+  strip.hidden = $("week-note").hidden = scope.hidden = days.length < 2;
   if (days.length < 2) return;
+  if (w.farm_id) scope.append(`Next 6 days at ${farmName(w.farm_id)}`,
+    el("button", { type: "button", class: "link-btn", onclick: () => selectFarm(w.farm_id) }, "Show all farms"));
+  else scope.append("Next 6 days, all farms");
   const lead = (state.tomorrow && state.tomorrow.lead_days) || 1;
   const max = Math.max(...days.map((d) => d.pred_mwh), 1e-9);
   const wd = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", timeZone: "UTC" });   // "Tue 10": one line
@@ -786,9 +804,8 @@ async function loadPredict() {
   const tab = $("tab-predict");
   tab.classList.add("loading");
   try {
-    if (!state.tomorrow) [state.tomorrow, state.metrics, state.week] = await Promise.all([
-      api("/api/forecast/tomorrow"), api("/api/forecast/metrics"), api("/api/forecast/week").catch(() => null)]);
-    renderWeek();
+    if (!state.tomorrow) [state.tomorrow, state.metrics] = await Promise.all([api("/api/forecast/tomorrow"), api("/api/forecast/metrics")]);
+    await loadWeek();
     noteSource("forecast", state.tomorrow.meta);
     $("pred-fake").hidden = state.tomorrow.meta.source !== "fixtures";
     renderPredict();
@@ -806,6 +823,7 @@ function renderPredict() {
   const lead = tm.lead_days || 1;
   const when = lead === 1 ? "tomorrow" : `on ${dayFmt.format(new Date((farms[0] && farms[0].hours[0] && farms[0].hours[0].hour_start) || Date.now()))}`;
   $("pred-scope").textContent = sel ? `Wind expected to be wasted ${when} at ${farmName(sel.farm_id)}` : `Wind expected to be wasted ${when}, all farms`;
+  $("pred-table-title").textContent = `${when === "tomorrow" ? "Tomorrow" : when.replace(/^on /, "")}, farm by farm`;   // the table is for the chosen day
 
   // hourly totals across the scope (summing farm ranges overstates the joint range: labelled)
   const hours = (scope[0] && scope[0].hours.map((h) => h.hour_start)) || [];
