@@ -277,9 +277,11 @@ def choose_fraction(hist, price, head, farm) -> dict:
     return {"chosen": best, "selected_on": list(TUNE_MONTHS), "forecast_revenue_gbp_by_fraction": scores}
 
 
-def price_forecast_effect(bats, hist, price, head, farm, hold: dict, tot: pd.DataFrame) -> dict | None:
+def price_forecast_effect(bats, hist, price, head, farm, hold: dict, tot: pd.DataFrame,
+                          sched: pd.DataFrame | None = None) -> dict | None:
     """#51 money test: capture ratio planning with the price forecast vs the 7-day mean, same
-    batteries, same ceiling (perfect/lp, actual prices). Full period and hold-out months."""
+    batteries, same ceiling (perfect/lp, actual prices). Full period and hold-out months, each with a
+    day-block bootstrap 95% interval on the difference (sched: the main replay, with `key`)."""
     path = PROCESSED / "price_forecast.parquet"
     if not path.exists():
         return None
@@ -299,6 +301,15 @@ def price_forecast_effect(bats, hist, price, head, farm, hold: dict, tot: pd.Dat
             raise RuntimeError(f"price forecast missing on {len(held_fell)} battery-days in the hold-out months "
                                f"(first {held_fell.min():%Y-%m-%d}); check price_forecast.parquet covers {HOLDOUT_MONTHS}")
         full, held = float(rev.revenue_gbp.sum()), _revenue(rev, HOLDOUT_MONTHS)
+        ci = {}
+        if sched is not None:
+            from pipeline import bootstrap as bs
+            day = lambda d: d.groupby(d.period_start.dt.normalize()).revenue_gbp.sum()  # noqa: E731
+            pf, base, ceil = day(rev), day(sched[sched.key == key]), day(sched[sched.key == "perfect/lp"])
+            in_hold = lambda s: s[s.index.strftime("%Y-%m").isin(HOLDOUT_MONTHS)]  # noqa: E731
+            ci = {"capture_ratio_diff_ci95": [round(v, 4) for v in bs.capture_diff_ci95(pf, base, ceil)],
+                  "holdout_capture_ratio_diff_ci95": [round(v, 4) for v in bs.capture_diff_ci95(
+                      in_hold(pf), in_hold(base), in_hold(ceil))]}
         out[key] = {
             "capture_ratio_7day": round(float(tot.loc[key, "revenue_gbp"]) / ceiling, 4),
             "capture_ratio_price_forecast": round(full / ceiling, 4),
@@ -306,6 +317,8 @@ def price_forecast_effect(bats, hist, price, head, farm, hold: dict, tot: pd.Dat
             "holdout_capture_ratio_price_forecast": round(held / ceiling_hold, 4),
             "revenue_gbp_7day": round(float(tot.loc[key, "revenue_gbp"]), 0),
             "revenue_gbp_price_forecast": round(full, 0),
+            # difference = price forecast minus 7-day; an interval spanning 0 means no detectable effect
+            **ci,
             # outside the price backtest months the plan falls back to the 7-day mean, so the full-period
             # figure mixes both; the hold-out figure is the price forecast on every day (checked above)
             "battery_days_with_price_forecast": int(len(used)),
@@ -347,6 +360,17 @@ def extended_replay(bats: list[dict], band_weight: float):
     return sched, summary
 
 
+def _holdout_gap_ci(sched: pd.DataFrame) -> dict:
+    """Day-block bootstrap 95% interval of the hold-out capture-ratio gap, forecast minus reactive."""
+    from pipeline import bootstrap as bs
+    h = sched[sched.period_start.dt.strftime("%Y-%m").isin(HOLDOUT_MONTHS)]
+    def day(k):
+        g = h[h.key == k]
+        return g.groupby(g.period_start.dt.normalize()).revenue_gbp.sum()
+    return {d: [round(v, 4) for v in bs.capture_diff_ci95(day(f"forecast/{d}"), day(f"reactive/{d}"), day("perfect/lp"))]
+            for d in ("lp", "rule")}
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     periods, hist, price, head, farm = load_inputs()
@@ -382,7 +406,7 @@ def main():
 
     ratios = capture_ratios(tot.revenue_gbp.to_dict())
     hold = {k: _revenue(sched[sched.key == k], HOLDOUT_MONTHS) for k in keys}
-    price_effect = price_forecast_effect(bats, hist, price, head, farm, hold, tot)
+    price_effect = price_forecast_effect(bats, hist, price, head, farm, hold, tot, sched)
     out = {"period": {"start": f"{periods[0]:%Y-%m-%dT%H:%M:%SZ}",
                       "end": f"{periods[-1] + pd.Timedelta(minutes=30):%Y-%m-%dT%H:%M:%SZ}"},
            "batteries": [{k: b[k] for k in ("battery_id", "farm_id", "zone", "power_mw", "energy_mwh",
@@ -400,6 +424,8 @@ def main():
            **({"price_forecast_effect": price_effect} if price_effect else {}),
            "holdout": {"months": list(HOLDOUT_MONTHS),
                        "capture_ratio": capture_ratios(hold),
+                       # is the headline gap real? forecast minus reactive, 95% interval resampling whole days
+                       "forecast_minus_reactive_ci95": _holdout_gap_ci(sched),
                        "revenue_gbp": {k: round(v, 0) for k, v in hold.items()}},
            **({"extended_backtest": ext_summary} if ext_summary else {}),
            "plan_waste_fraction": tuning,

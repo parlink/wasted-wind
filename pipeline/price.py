@@ -18,6 +18,16 @@ Signals (asof <= issued_at, checked by pipeline.features.check_no_leakage):
 Walk-forward by month over the same last 6 months as the waste forecast; training stops the day
 before each test month (pipeline.train.train_mask). The money test is in dispatch.scorecard
 (`price_forecast_effect`): a more accurate price is only worth having if batteries earn more.
+
+Result (#51 review): no detectable difference from the 7-day mean. The MAE difference has a day-block
+bootstrap 95% interval spanning zero, and the monthly results swing both ways (May much worse, June
+better), so the dispatcher keeps the 7-day mean. Two limits on the comparison:
+  - the price is APX MID, a within-day index (99.99% of half hours), unknown at D-1 10:00. A real
+    trader planning then could also use the day-ahead auction price (EPEX / N2EX, cleared ~09:20-09:50
+    UK time), a stronger baseline than either; it isn't in Elexon's open data, so it isn't tested here.
+  - the dispatcher's 7-day mean (scorecard.expected_price) reads residual.parquet prices, whose short
+    gaps are interpolated; this file's baseline uses raw MID, skipping gaps. They match where there
+    are no gaps.
 """
 from __future__ import annotations
 
@@ -42,18 +52,24 @@ PARAMS = dict(objective="regression", n_estimators=400, learning_rate=0.05, num_
 
 # ---------- tested pieces ----------
 
+LAG_DAYS = range(2, 9)     # same half hour on D-2 .. D-8; D-2 is the latest whole day known at D-1 10:00
+
+
 def lag_features(price: pd.Series) -> pd.DataFrame:
     """Price signals per half hour known at D-1 10:00: same slot D-2, same slot mean D-8..D-2, D-2 mean."""
     idx = price.index
     at = lambda k: price.reindex(idx - pd.Timedelta(days=k)).to_numpy()  # noqa: E731
-    lags = np.column_stack([at(k) for k in range(2, 9)])
+    lags = np.column_stack([at(k) for k in LAG_DAYS])
     daymean = price.groupby(price.index.normalize()).mean()
     out = pd.DataFrame({
         "price_lag2d_gbp_mwh": lags[:, 0],
         "price_7d_mean_gbp_mwh": pd.DataFrame(lags).mean(axis=1, skipna=True).to_numpy(),
         "price_lag2d_daymean_gbp_mwh": (idx.normalize() - pd.Timedelta(days=2)).map(daymean).to_numpy(),
     }, index=idx)
-    out["asof_price"] = idx.normalize() - pd.Timedelta(days=1)       # end of D-2
+    # asof from the lags actually used (#51 review): the freshest is the same slot min(LAG_DAYS) days back,
+    # known once that half hour ends; the D-2 day mean is known at D-1 00:00. A shorter lag fails the check.
+    freshest = idx - pd.Timedelta(days=min(LAG_DAYS)) + pd.Timedelta(minutes=30)
+    out["asof_price"] = np.maximum(freshest, idx.normalize() - pd.Timedelta(days=1))
     return out
 
 
@@ -138,8 +154,19 @@ def main():
     by_month = bt.groupby(bt.period_start.dt.strftime("%Y-%m")).apply(
         lambda g: {"mae_model": round(float((g.price_pred_gbp_mwh - g.price_actual_gbp_mwh).abs().mean()), 2),
                    "mae_7day": round(float((g.price_7d_mean_gbp_mwh - g.price_actual_gbp_mwh).abs().mean()), 2)}).to_dict()
+    from pipeline import bootstrap as bs
+    gap = (bt.price_pred_gbp_mwh - bt.price_actual_gbp_mwh).abs() - (bt.price_7d_mean_gbp_mwh - bt.price_actual_gbp_mwh).abs()
+    lo, hi = bs.ci95(lambda x: x.mean(), gap.set_axis(bt.period_start), bt.period_start)
     block = {"validation": f"walk-forward by month ({months[0]:%Y-%m} to {months[-1]:%Y-%m}), trained to D-1 of each month",
              "mae_model_gbp_mwh": round(err("price_pred_gbp_mwh"), 2), "mae_7day_gbp_mwh": round(err("price_7d_mean_gbp_mwh"), 2),
+             "mae_diff_gbp_mwh": round(float(gap.mean()), 2),
+             "mae_diff_ci95_gbp_mwh": [round(lo, 2), round(hi, 2)],
+             "verdict": ("no detectable difference from the 7-day mean" if lo < 0 < hi
+                         else "better than the 7-day mean" if hi < 0 else "worse than the 7-day mean"),
+             "notes": ["mae_diff = model minus 7-day (negative = model better); 95% interval from resampling whole days",
+                       "by_month swings both ways; the overall figure averages them out",
+                       "price = APX MID (within-day); the day-ahead auction price a trader would also have at "
+                       "D-1 10:00 is not in Elexon's open data, so it is not a baseline here"],
              "by_month": by_month, "features": FEATURES,
              "money_test": "see scorecard.json price_forecast_effect"}
     mpath = ft.PROCESSED / "model_metrics.json"
