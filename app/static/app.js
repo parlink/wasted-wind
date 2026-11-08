@@ -1478,7 +1478,7 @@ function renderApDay() {
   const caught = steps.reduce((s, x) => s + (x.captured_curtailment_mwh || 0), 0);
   const rev = steps.some((x) => x.revenue_gbp != null) ? steps.reduce((s, x) => s + (x.revenue_gbp || 0), 0) : null;
   const n = (a) => steps.filter((x) => x.action === a).length;
-  $("ap-day-sum").textContent = `${bat.battery_id}: stored ${fmtEnergy(caught)} of wasted wind` + (rev == null ? "" : `, earned ${fmtCompact(rev, "£")}`) +
+  $("ap-day-sum").textContent = `${batteryName((state.ap.scorecard.batteries.find((x) => x.battery_id === bat.battery_id)) || bat)}: stored ${fmtEnergy(caught)} of wasted wind` + (rev == null ? "" : `, earned ${fmtCompact(rev, "£")}`) +
     ` · ${n("charge")} half hours storing, ${n("discharge")} selling, ${n("hold")} waiting`;
   strip.setAttribute("aria-label", `Actions through the day for ${bat.battery_id}`);
   const mixed = day.live || bat0Done(day) > 0;   // part done, part still a plan
