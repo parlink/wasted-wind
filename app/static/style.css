@@ -344,9 +344,10 @@ details.explain[open] summary { margin-bottom: 4px; }
 .week-strip { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin: 4px 0 14px; }
 .week-day { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 7px 8px; border-radius: 9px;
   background: var(--surface); border: 1px solid var(--border); cursor: pointer; font: inherit; min-width: 0; }
+.week-day .wd-date, .week-day .wd-val { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .week-day .wd-date { font-size: 11px; color: #898781; }
-.week-day .wd-val { font-weight: 600; font-variant-numeric: tabular-nums; }
-.week-day .wd-bar { height: 4px; border-radius: 2px; background: #c81e6a; opacity: 0.85; }
+.week-day .wd-val { font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; }
+.week-day .wd-bar { height: 4px; border-radius: 2px; background: #c81e6a; opacity: 0.85; margin-top: auto; }  /* bars line up */
 .week-day.outlook { border-style: dashed; }
 .week-day.outlook .wd-bar { opacity: 0.35; }
 .week-day[aria-selected="true"] { box-shadow: inset 0 0 0 2px #0b0b0b; }
