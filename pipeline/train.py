@@ -50,6 +50,7 @@ FC_COLS = ["farm_id", "zone", "hour_start", "issued_at", "split", "curtailed_mwh
            "model_version"]
 LIMIT_FEATURES = ["b4_limit_mw", "b6_limit_mw", "b4_excess_potential_mw", "b6_excess_potential_mw"]
 NO_LIMIT_FEATURES = [f for f in ft.FEATURES if f not in LIMIT_FEATURES]
+WITH_OB_FEATURES = ft.FEATURES + ft.OB_FEATURES     # #51 ablation: the model plus order-book signals
 QUANTILES = {"curtailed_mwh_p10": 0.1, "curtailed_mwh_p90": 0.9}
 BAND_EDGES = (1.0, 10.0)               # groups on the point forecast, MWh per farm-hour
 BAND_LABELS = ("<1", "1-10", ">10")
@@ -183,6 +184,8 @@ def run_fold(panel: pd.DataFrame, month: pd.Timestamp):
     test = predict_all(models, test)
     ablation = _fit(train, NO_LIMIT_FEATURES)
     test["pred_no_limits"] = np.clip(ablation.predict(test[NO_LIMIT_FEATURES]), 0, None)
+    with_ob = _fit(train, WITH_OB_FEATURES)           # #51: what the order-book signals add
+    test["pred_with_orderbook"] = np.clip(with_ob.predict(test[WITH_OB_FEATURES]), 0, None)
     test.attrs["shap"] = shap_values(model, test[ft.FEATURES])     # out-of-sample, this fold
     b = fit_baselines(train)
     test = apply_baselines(test, b)
@@ -250,6 +253,7 @@ def live_rows(models: dict, baselines: dict, curt: pd.DataFrame, now: pd.Timesta
                     "are incomplete", curt.period_start.max(), f"{day:%Y-%m-%d}")
     p = weather.assign(issued_at=now, asof_wind=now, asof_limits=now)
     zone_pot = ft.zone_potential(weather, farms, ft.commissioning(curt))
+    # order-book signals aren't in the live model (see features.OB_FEATURES), so none are loaded here
     rows = ft.add_signals(p, curt, ft.hourly_target(curt), farms, lim, dem_h, zone_pot)
     ft.check_no_leakage(rows)
     rows = predict_all(models, rows)
@@ -347,7 +351,10 @@ def main():
                          f"({months[0]:%Y-%m} to {months[-1]:%Y-%m})",
            "event_threshold_mwh": EVENT_MWH,
            "models": {k: {kk: round(vv, 3) for kk, vv in v.items()} for k, v in metrics.items()},
-           "ablations": {"lightgbm_without_neso_limits": {
+           "ablations": {"lightgbm_with_orderbook": {
+               k: round(v, 3) for k, v in score(bt.curtailed_mwh_actual, bt.pred_with_orderbook,
+                                                bt.hour_start).items()},
+               "lightgbm_without_neso_limits": {
                k: round(v, 3) for k, v in score(bt.curtailed_mwh_actual, bt.pred_no_limits,
                                                 bt.hour_start).items()}},
            "interval": interval_stats(bt),

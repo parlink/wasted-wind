@@ -165,7 +165,9 @@ def load_inputs():
 DISPATCHERS = {"rule": plan_day, "lp": optimiser.plan_day}
 
 
-def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: str = "rule") -> pd.DataFrame:
+def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: str = "rule",
+           price_fc=None) -> pd.DataFrame:
+    """price_fc: optional day -> 48 expected prices (pipeline.price.by_day); else the 7-day mean."""
     days = len(hist) // 48 - PRE_DAYS          # the first PRE_DAYS days are history only
     soc, rows = 0.0, []
     for d in range(PRE_DAYS, PRE_DAYS + days):
@@ -182,7 +184,8 @@ def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: 
                 sig, exp_p, exp_h = actual_w, actual_p, actual_h
             else:
                 sig = np.zeros(48) if strategy == "reactive" else np.nan_to_num(f["fc"][sl])
-                exp_p = expected_price(price, d)
+                fc_p = price_fc(day_start) if price_fc is not None else None
+                exp_p = fc_p if fc_p is not None else expected_price(price, d)
                 exp_h = head_zone[(d - 2) * 48:(d - 1) * 48]    # same half hour on D-2
             plan = DISPATCHERS[dispatcher](battery, sig, exp_p, exp_h, soc)
             out = execute(battery, plan, actual_w, actual_p, actual_h, soc, plan["reason"])
@@ -232,6 +235,34 @@ def choose_fraction(hist, price, head, farm) -> dict:
     return {"chosen": best, "selected_on": list(TUNE_MONTHS), "forecast_revenue_gbp_by_fraction": scores}
 
 
+def price_forecast_effect(bats, hist, price, head, farm, hold: dict, tot: pd.DataFrame) -> dict | None:
+    """#51 money test: capture ratio planning with the price forecast vs the 7-day mean, same
+    batteries, same ceiling (perfect/lp, actual prices). Full period and hold-out months."""
+    path = PROCESSED / "price_forecast.parquet"
+    if not path.exists():
+        return None
+    from pipeline.price import by_day
+    lookup = by_day(pd.read_parquet(path))
+    ceiling, ceiling_hold = float(tot.loc["perfect/lp", "revenue_gbp"]), hold["perfect/lp"]
+    out = {}
+    for strat in ("forecast", "reactive"):
+        key = f"{strat}/lp"
+        rev = pd.concat([replay(b, strat, hist, price, head[b["zone"]], farm[b["battery_id"]], "lp", lookup)
+                         for b in bats], ignore_index=True)
+        full, held = float(rev.revenue_gbp.sum()), _revenue(rev, HOLDOUT_MONTHS)
+        out[key] = {
+            "capture_ratio_7day": round(float(tot.loc[key, "revenue_gbp"]) / ceiling, 4),
+            "capture_ratio_price_forecast": round(full / ceiling, 4),
+            "holdout_capture_ratio_7day": round(hold[key] / ceiling_hold, 4),
+            "holdout_capture_ratio_price_forecast": round(held / ceiling_hold, 4),
+            "revenue_gbp_7day": round(float(tot.loc[key, "revenue_gbp"]), 0),
+            "revenue_gbp_price_forecast": round(full, 0)}
+        log.info("price forecast, %s: capture %.3f (7-day %.3f); hold-out %.3f (7-day %.3f)", key,
+                 out[key]["capture_ratio_price_forecast"], out[key]["capture_ratio_7day"],
+                 out[key]["holdout_capture_ratio_price_forecast"], out[key]["holdout_capture_ratio_7day"])
+    return out
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     periods, hist, price, head, farm = load_inputs()
@@ -262,6 +293,7 @@ def main():
 
     ratios = capture_ratios(tot.revenue_gbp.to_dict())
     hold = {k: _revenue(sched[sched.key == k], HOLDOUT_MONTHS) for k in keys}
+    price_effect = price_forecast_effect(bats, hist, price, head, farm, hold, tot)
     out = {"period": {"start": f"{periods[0]:%Y-%m-%dT%H:%M:%SZ}",
                       "end": f"{periods[-1] + pd.Timedelta(minutes=30):%Y-%m-%dT%H:%M:%SZ}"},
            "batteries": [{k: b[k] for k in ("battery_id", "farm_id", "zone", "power_mw", "energy_mwh",
@@ -276,6 +308,7 @@ def main():
                        "exceed what the boundary could carry; ratios are comparable, £ sums are optimistic",
                        "the whole-period LP carries SoC across months, so its Aug-Oct slice is a near-bound, "
                        "not a strict bound, for that window"],
+           **({"price_forecast_effect": price_effect} if price_effect else {}),
            "holdout": {"months": list(HOLDOUT_MONTHS),
                        "capture_ratio": capture_ratios(hold),
                        "revenue_gbp": {k: round(v, 0) for k, v in hold.items()}},
