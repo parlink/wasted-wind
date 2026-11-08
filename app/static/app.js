@@ -741,7 +741,7 @@ function renderWeek() {
   for (const d of days) {
     const sel = d.lead_days === lead;
     strip.append(el("button", { type: "button", role: "tab", class: `week-day ${d.kind}`, "aria-selected": String(sel),
-      title: `${d.kind === "outlook" ? "Outlook" : "Forecast"} made ${d.lead_days} day${d.lead_days > 1 ? "s" : ""} ahead.` +
+      title: `${dayFmt.format(new Date(d.date))}. ${d.kind === "outlook" ? "Outlook" : "Forecast"} made ${d.lead_days} day${d.lead_days > 1 ? "s" : ""} ahead.` +
         (d.p90_mwh != null ? ` Likely range (farm ranges added up): ${fmtEnergy(d.p10_mwh)} – ${fmtEnergy(d.p90_mwh)}` : " No range: only the day-ahead's range is calibrated."),
       onclick: () => selectLead(d.lead_days) },
       el("span", { class: "wd-date" }, d.lead_days === 1 ? "Tomorrow" : wd.format(new Date(d.date))),
