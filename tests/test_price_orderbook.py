@@ -95,3 +95,50 @@ def test_price_forecast_by_day_fills_a_few_missing_half_hours():
     many = np.ones(48, bool); many[:5] = False                   # 5 missing: more than allowed
     lookup = pr.by_day(pd.DataFrame({"period_start": idx[many], "price_pred_gbp_mwh": vals[many]}))
     assert lookup(idx[0]) is None
+
+
+# ---------- #51 review: honest uncertainty and a leak check that can fail ----------
+
+def test_day_block_bootstrap_interval():
+    from pipeline import bootstrap as bs
+    days = pd.date_range("2026-08-01", periods=60, freq="D")
+    const = pd.Series(2.0, index=days)
+    lo, hi = bs.ci95(lambda s: s.mean(), const, days)
+    assert lo == pytest.approx(2.0) and hi == pytest.approx(2.0)
+    noise = pd.Series(np.random.default_rng(0).normal(0, 1, 60), index=days)
+    lo, hi = bs.ci95(lambda s: s.mean(), noise, days)
+    assert lo < 0 < hi                                   # pure noise: the interval spans zero
+
+
+def test_capture_ratio_difference_interval_resamples_whole_days():
+    from pipeline import bootstrap as bs
+    days = pd.date_range("2026-08-01", periods=30, freq="D")
+    a, b = pd.Series(10.0, index=days), pd.Series(12.0, index=days)
+    ceiling = pd.Series(100.0, index=days)
+    lo, hi = bs.capture_diff_ci95(b, a, ceiling)
+    assert lo == pytest.approx(0.02) and hi == pytest.approx(0.02)
+
+
+def test_price_asof_follows_the_lags_actually_used(monkeypatch):
+    # If someone shortened the lags to include D-1, the leak check must fail, not pass silently.
+    p = price_series()
+    from pipeline import features as ft
+    ok = pr.lag_features(p).assign(issued_at=lambda d: ft.issue_time(d.index))
+    ft.check_no_leakage(ok)
+    monkeypatch.setattr(pr, "LAG_DAYS", range(1, 8))
+    bad = pr.lag_features(p).assign(issued_at=lambda d: ft.issue_time(d.index))
+    with pytest.raises(AssertionError, match="asof_price"):
+        ft.check_no_leakage(bad)
+
+
+def test_holdout_gap_interval_uses_only_holdout_days():
+    from dispatch import scorecard as sc
+    t = pd.date_range("2026-07-25T00:00Z", "2026-08-10T00:00Z", freq="30min", inclusive="left")
+    rows = []
+    for key, rev in [("forecast/lp", 2.0), ("reactive/lp", 1.0), ("forecast/rule", 1.0), ("reactive/rule", 1.0),
+                     ("perfect/lp", 10.0)]:
+        r = np.full(len(t), rev)
+        r[t.strftime("%Y-%m") == "2026-07"] = 99.0           # July isn't hold-out: must not count
+        rows.append(pd.DataFrame({"period_start": t, "key": key, "revenue_gbp": r}))
+    ci = sc._holdout_gap_ci(pd.concat(rows))
+    assert ci["lp"] == [pytest.approx(0.1), pytest.approx(0.1)] and ci["rule"] == [0.0, 0.0]

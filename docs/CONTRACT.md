@@ -129,6 +129,7 @@ move. `extended_backtest` has `validation`, `models` (same keys, over every mont
 `ablations.lightgbm_with_orderbook` (#51): the main model plus the order-book signals, same folds.
 `price_model` (#51, written by `pipeline/price.py`, which must run **after** `pipeline/train.py`): `validation`,
 `mae_model_gbp_mwh`, `mae_7day_gbp_mwh` (the dispatcher's 7-day mean), `by_month` and `features`.
+Also (#51 review): `mae_diff_gbp_mwh` (model − 7-day), `mae_diff_ci95_gbp_mwh` (day-block bootstrap), `verdict`, `notes`.
 
 ### `data/processed/forecast_skill_by_lead.json` (A writes, `pipeline/lead_skill.py`, #49)
 
@@ -206,6 +207,9 @@ and `caveats`. `schedules.parquet` likewise has `perfect/lp` rows.
 `holdout_capture_ratio_price_forecast`, `revenue_gbp_7day`, `revenue_gbp_price_forecast`,
 `battery_days_with_price_forecast`, `battery_days_fallback_7day` and `months_with_price_forecast`. The hold-out
 figures use the price forecast on every day (the scorecard refuses to write them otherwise).
+Each also has `capture_ratio_diff_ci95` and `holdout_capture_ratio_diff_ci95` (price forecast − 7-day; an interval
+spanning 0 = no detectable effect). `holdout.forecast_minus_reactive_ci95` (`lp`, `rule`): the same interval for the
+headline gap. All intervals resample whole days (`pipeline/bootstrap.py`).
 `period`, `results` and `holdout` stay on the headline window (the tuning plus hold-out months, 2026-05 to 2026-10).
 `extended_backtest` (#50, when the forecast backtest starts earlier): `period`, `capture_ratio`, `revenue_gbp`
 per strategy/dispatcher for the months **before** that window, with the same batteries and settings (tuned on
