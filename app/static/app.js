@@ -2029,7 +2029,7 @@ function initAbout() {
   }));
   $("about-tour").addEventListener("click", () => {
     showAbout(false);
-    const b = document.querySelector('[data-tour-start="2"]');   // the quick story suits a first visit
+    const b = document.querySelector('[data-tour-start="1"]');
     if (b) b.click();
   });
   let seen = false;
