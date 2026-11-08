@@ -132,8 +132,8 @@ h4 { font-size: 13px; margin: 16px 0 4px; font-weight: 600; color: var(--ink-2);
 }
 .icon-btn:hover:not(:disabled) { background: rgba(118, 118, 128, 0.2); }
 .icon-btn:disabled { opacity: 0.35; cursor: default; }
-.date-row input[type="date"], .date-row select { flex: 1; min-width: 0; }
-input[type="date"], select, .battery input {
+.date-row input[type="date"], .date-row input[type="month"], .date-row input[type="week"], .date-row select { flex: 1; min-width: 0; }
+input[type="date"], input[type="month"], input[type="week"], select, .battery input {
   background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 6px 9px; height: 34px;
   font-variant-numeric: tabular-nums; box-shadow: var(--shadow-card);
 }
