@@ -351,21 +351,30 @@ function drawBoundaryLabels() {
 
 // ---------- turbines: each farm is a turbine on its circle; on Reveal the blades turn at the share of
 // output the farm was allowed to make, so a farm that was mostly switched off barely moves ----------
-const TURBINE_SVG = '<svg viewBox="0 0 24 34" aria-hidden="true"><path class="tower" d="M10.7 10 L13.3 10 L15.4 32.6 L8.6 32.6 Z"/><rect class="tower" x="7" y="32" width="10" height="2" rx="1"/><rect class="nacelle" x="10.4" y="8.4" width="5.4" height="3.2" rx="1.3"/><g class="blades"><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z"/><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z" transform="rotate(120 12 10)"/><path d="M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z" transform="rotate(240 12 10)"/></g><circle class="hub" cx="12" cy="10" r="2"/></svg>';
+// Two stacked SVGs of the same box: the static tower, and the rotor (blades + black hub) that spins. The rotor is
+// its own element so the browser redraws it at its real on-screen size every time the marker grows; a spinning
+// <g> inside one SVG was drawn at the starting size and then stretched, which made it blurry when zoomed in.
+const BLADE = "M12 10 C10.2 7 10.3 3.2 12 0.3 C13.8 3.2 13.9 7 12 10 Z";
+const TURBINE_SVG =
+  '<svg class="tower-svg" viewBox="0 0 24 34" aria-hidden="true"><path class="tower" d="M10.7 10 L13.3 10 L15.4 32.6 L8.6 32.6 Z"/><rect class="tower" x="7" y="32" width="10" height="2" rx="1"/></svg>' +
+  `<svg class="rotor" viewBox="0 0 24 34" aria-hidden="true"><g class="blades-fill"><path d="${BLADE}"/><path d="${BLADE}" transform="rotate(120 12 10)"/><path d="${BLADE}" transform="rotate(240 12 10)"/></g><circle class="hub" cx="12" cy="10" r="2.2"/></svg>`;
 const turbineMarkers = new Map();
-const MIN_CIRCLE_R = 2.5, MAX_CIRCLE_R = 13.5;   // px at the default zoom; the biggest circle is no taller than a turbine
+const MIN_CIRCLE_R = 2, MAX_CIRCLE_R = 10.8;   // px at the default zoom; the biggest circle is no taller than a turbine (16 x 22.4 px, style.css)
 
 // Marker size as the map zooms. Zooming out shrinks them with the map. Zooming in from the default view they grow
-// more slowly than the land does (so they get a little smaller relative to it), until zoom 9; past that they grow with
-// the land, keeping a fixed size on the ground, up to 12x so they never swamp the screen.
-const BASE_ZOOM = 5.6, SLOW_UNTIL = 9, SLOW_RATE = 0.45, MAX_SCALE = 12;
+// more slowly than the land does (so they get a little smaller relative to it): at SLOW_RATE (a bit under half the
+// land's rate) until zoom 9, then at MID_RATE (three quarters of it) until they reach MAX_SCALE, after which they
+// stop growing so they never swamp the screen. Raising MAX_SCALE or lowering MID_RATE keeps them growing for longer.
+const BASE_ZOOM = 5.6, SLOW_UNTIL = 9, SLOW_RATE = 0.45, MID_RATE = 0.75, MAX_SCALE = 15;
+const CAP_ZOOM = SLOW_UNTIL + (Math.log2(MAX_SCALE) - SLOW_RATE * (SLOW_UNTIL - BASE_ZOOM)) / MID_RATE;   // where growth stops
 function markerScale(z) {
   if (z <= BASE_ZOOM) return Math.max(0.45, 2 ** (z - BASE_ZOOM));
-  const slow = 2 ** (SLOW_RATE * (Math.min(z, SLOW_UNTIL) - BASE_ZOOM));
-  return Math.min(MAX_SCALE, slow * 2 ** Math.max(0, z - SLOW_UNTIL));
+  const grown = SLOW_RATE * (Math.min(z, SLOW_UNTIL) - BASE_ZOOM) + MID_RATE * Math.max(0, z - SLOW_UNTIL);
+  return Math.min(MAX_SCALE, 2 ** grown);
 }
 function zoomScaled(radius) {   // MapLibre: zoom may only drive a top-level interpolate, so sample markerScale at stops
-  const stops = [3, 4.5, BASE_ZOOM, 7, 8, SLOW_UNTIL, 10, 11, 12, 22].flatMap((z) => [z, ["*", radius, markerScale(z)]]);
+  const stops = [3, 4.5, BASE_ZOOM, 7, 8, SLOW_UNTIL, 10, 11, 12, CAP_ZOOM, 22]
+    .sort((a, b) => a - b).flatMap((z) => [z, ["*", radius, markerScale(z)]]);
   return ["interpolate", ["linear"], ["zoom"], ...stops];
 }
 function syncMarkerScale() { if (map) map.getContainer().style.setProperty("--tscale", markerScale(map.getZoom()).toFixed(3)); }
