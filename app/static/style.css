@@ -440,3 +440,8 @@ details.explain[open] summary { margin-bottom: 4px; }
 .about-proof p { margin: 0; }
 .about-proof p + p { margin-top: 6px; }
 .about-proof .small { font-size: 12.5px; color: var(--muted); }
+
+/* decision log: what happened (line 1), the plan's reason (line 2, smaller) */
+.decision-log .what { font-weight: 500; color: var(--ink); }
+.decision-log .why { display: block; font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+.decision-log .why::first-letter { text-transform: uppercase; }
