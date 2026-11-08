@@ -169,3 +169,10 @@ def test_union_inflate_and_clamp():
     assert got["u"] == {"left": 10, "top": 20, "width": 150, "height": 120}
     assert got["i"] == {"left": 5, "top": 5, "width": 30, "height": 30}
     assert got["c"] == {"left": 0, "top": 880, "width": 80, "height": 20}
+
+
+def test_spotlight_border_stays_visible_on_lightly_dimmed_steps():
+    # the border is white; on steps with dim ~0.1 the page around it is near white, so a dark outline is drawn outside it
+    css = (STATIC / "tour.css").read_text(encoding="utf-8")
+    spot = re.search(r"\.tour-spot \{([^}]*)\}", css).group(1)
+    assert "var(--tour-spot-outline)" in spot and "--tour-spot-outline:" in css
