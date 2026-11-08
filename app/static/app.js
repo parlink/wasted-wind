@@ -3,7 +3,7 @@
 "use strict";
 
 const C = {
-  planned: "#2a78d6", waste: "#eb6834", wasteWash: "rgba(235,104,52,0.22)", neutral: "#898781",
+  planned: "#0e9fbf", waste: "#c81e6a", wasteWash: "rgba(200,30,106,0.18)", neutral: "#898781",
   grid: "#e1e0d9", axis: "#c3c2b7", ink: "#0b0b0b", ink2: "#52514e", muted: "#898781", critical: "#d03b3b",
   surface: "#fcfcfb", rampZero: "#b8b6ae",
 };
@@ -349,7 +349,7 @@ function updateMap() {
   map.getSource("farms").setData({ type: "FeatureCollection", features });
   map.setPaintProperty("farms", "circle-radius", zoomScaled(["get", "r"]));
   map.setPaintProperty("farms", "circle-color", predict || simulate ? C.waste
-    : ["interpolate", ["linear"], ["get", "share"], 0, C.rampZero, 0.1, "#f2a57a", 0.25, C.waste, 0.5, "#b8461a"]);
+    : ["interpolate", ["linear"], ["get", "share"], 0, C.rampZero, 0.1, "#e58ab0", 0.25, C.waste, 0.5, "#8a0f45"]);
   map.setPaintProperty("farms", "circle-stroke-color",
     ["case", ["==", ["get", "farm_id"], state.farm || ""], C.ink, C.surface]);
   map.setPaintProperty("farms", "circle-stroke-width",
@@ -1171,7 +1171,7 @@ function renderApDay() {
   });
   const cap = (state.ap.scorecard.batteries.find((b) => b.battery_id === bat.battery_id) || {}).energy_mwh;
   lineChart("ap-soc-chart", steps.map((x) => hourFmt.format(new Date(x.period_start))), [
-    { label: "stored", data: steps.map((x) => x.soc_mwh), borderColor: C.planned, fill: "origin", backgroundColor: "rgba(42,120,214,0.10)" },
+    { label: "stored", data: steps.map((x) => x.soc_mwh), borderColor: C.planned, fill: "origin", backgroundColor: "rgba(14,159,191,0.12)" },
   ], { yLabel: "MWh stored" });
   if (cap) { charts["ap-soc-chart"].options.scales.y.max = cap; charts["ap-soc-chart"].update(); }
 }
