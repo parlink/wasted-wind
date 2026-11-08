@@ -156,6 +156,42 @@ function defaultRange(mode, anchor) {
     new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth() + 1, 1)));
   return clampRange(new Date(Date.UTC(a.getUTCFullYear(), 0, 1)), new Date(Date.UTC(a.getUTCFullYear() + 1, 0, 1)));
 }
+// History's pickers: All (or a hand-typed range) shows From - To; Day one date picker; Month and Week the browser's
+// month / week picker (a calendar of months; a calendar where clicking any day picks its week). Browsers without those
+// (Firefox, Safari) get the date picker instead, and the day picked snaps to its month or week. Year: a short list.
+// The app's weeks are 7-day blocks from the first day of data, 1 Jan 2024, a Monday that starts ISO week 1, so they
+// are exactly the ISO weeks the week picker uses.
+const NATIVE = (() => {
+  const has = (type) => { const i = document.createElement("input"); i.setAttribute("type", type); return i.type === type; };
+  return { month: has("month"), week: has("week") };
+})();
+function isoWeekOf(d) {   // a UTC date -> "2026-W44" (ISO 8601: weeks start on Monday; week 1 holds the first Thursday)
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7) + 3);   // the Thursday of its week decides the year
+  const week = Math.floor((t - Date.UTC(t.getUTCFullYear(), 0, 1)) / DAY_MS / 7) + 1;
+  return `${t.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+function mondayOfIsoWeek(v) {   // "2026-W44" -> the Monday that starts it (UTC), or null
+  const m = /^(\d{4})-W(\d{2})$/.exec(v || "");
+  if (!m) return null;
+  const jan4 = new Date(Date.UTC(+m[1], 0, 4));
+  return new Date(jan4.getTime() - ((jan4.getUTCDay() + 6) % 7) * DAY_MS + (+m[2] - 1) * 7 * DAY_MS);
+}
+function periodList(mode, first, end) {   // the Year list: first = data start, end = data end (exclusive); newest first
+  const out = [];
+  for (let y = first.getUTCFullYear(); y <= new Date(end.getTime() - DAY_MS).getUTCFullYear(); y++) {
+    out.push({ value: isoDay(new Date(Math.max(Date.UTC(y, 0, 1), first.getTime()))),
+               label: `${y}${Date.UTC(y + 1, 0, 1) > end.getTime() ? " (so far)" : ""}` });
+  }
+  return out.reverse();
+}
+function inferMode(r) {   // a typed range that is exactly one day / week / month / year switches to that picker
+  for (const m of ["day", "week", "month", "year"]) {
+    const d = defaultRange(m, r.start);
+    if (d && d.start.getTime() === r.start.getTime() && d.end.getTime() === r.end.getTime()) return m;
+  }
+  return "custom";
+}
 function shiftedRange(dir) {   // the next/previous period of the same length
   const r = state.range;
   if (!r) return null;
@@ -673,10 +709,25 @@ function syncDateInputs() {
   $("range-end").value = isoDay(new Date(r.end.getTime() - DAY_MS));   // shown inclusive
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode)));
   const fixed = state.mode !== "all";
-  // one day needs one date box, not "30 Dec to 30 Dec"
-  const oneDay = r.end - r.start === DAY_MS;
-  $("range-end").hidden = oneDay;
-  document.querySelector("#tab-reveal .date-sep").hidden = oneDay;
+  // Year: a short list. Month / Week: the browser's month / week picker, else the date picker snapping to the period.
+  // Day: one date picker. All or a typed range: From - To.
+  const m = state.mode, last = new Date(dataEnd().getTime() - DAY_MS);
+  const show = m === "year" ? "year" : (m === "month" || m === "week") ? (NATIVE[m] ? m : "snap") : m === "day" ? "day" : "range";
+  const sel = $("range-period");
+  sel.hidden = show !== "year";
+  if (show === "year") {
+    if (!sel.options.length) for (const o of periodList("year", dataStart(), dataEnd())) sel.append(el("option", { value: o.value }, o.label));
+    sel.value = isoDay(r.start);
+  }
+  const mon = $("range-month"), wk = $("range-week");
+  mon.hidden = show !== "month"; wk.hidden = show !== "week";
+  if (show === "month") { mon.min = isoDay(dataStart()).slice(0, 7); mon.max = isoDay(last).slice(0, 7); mon.value = isoDay(r.start).slice(0, 7); }
+  if (show === "week") { wk.min = isoWeekOf(dataStart()); wk.max = isoWeekOf(last); wk.value = isoWeekOf(r.start); }
+  $("range-start").hidden = !(show === "day" || show === "snap" || show === "range");
+  $("range-start").setAttribute("aria-label", show === "snap" ? `Any day in the ${m}` : show === "range" ? "From" : "Day");
+  const oneDay = r.end - r.start === DAY_MS;   // one day needs one date box, not "30 Dec to 30 Dec"
+  $("range-end").hidden = show !== "range" || oneDay;
+  document.querySelector("#tab-reveal .date-sep").hidden = show !== "range" || oneDay;
   $("range-prev").disabled = !fixed || !shiftedRange(-1);
   $("range-next").disabled = !fixed || !shiftedRange(1);
   $("play").disabled = !fixed;
@@ -705,8 +756,7 @@ function setRangeFromInputs() {
   const r = clampRange(s, new Date(e.getTime() + DAY_MS));
   if (!r) return;
   state.range = r;
-  const len = r.end - r.start;
-  state.mode = len === DAY_MS ? "day" : "custom";   // a hand-picked range: ‹ › step by its own length
+  state.mode = inferMode(r);   // exactly a day / week / month / year: that picker; anything else: ‹ › step by its length
   syncDateInputs();
   loadReveal();
 }
@@ -1968,7 +2018,18 @@ async function boot() {
   document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
   document.querySelectorAll("#tab-reveal .seg button").forEach((b) => b.addEventListener("click", () => { stopPlay(); setMode(b.dataset.mode); }));
   $("play").addEventListener("click", togglePlay);
-  $("range-start").addEventListener("change", () => { stopPlay(); setRangeFromInputs(); });
+  const showPeriod = (mode, day) => {   // load the whole year / month / week that contains `day`
+    if (!day || isNaN(day)) return;
+    stopPlay(); state.mode = mode; state.range = defaultRange(mode, day); syncDateInputs(); loadReveal();
+  };
+  $("range-start").addEventListener("change", (e) => {
+    // standing in for a month / week picker (Firefox, Safari): any day picked selects its month or week
+    if (state.mode === "month" || state.mode === "week") return showPeriod(state.mode, new Date(`${e.target.value}T00:00:00Z`));
+    stopPlay(); setRangeFromInputs();
+  });
+  $("range-period").addEventListener("change", (e) => showPeriod("year", new Date(`${e.target.value}T00:00:00Z`)));
+  $("range-month").addEventListener("change", (e) => e.target.value && showPeriod("month", new Date(`${e.target.value}-01T00:00:00Z`)));
+  $("range-week").addEventListener("change", (e) => showPeriod("week", mondayOfIsoWeek(e.target.value)));
   $("range-end").addEventListener("change", () => { stopPlay(); setRangeFromInputs(); });
   $("range-prev").addEventListener("click", () => { stopPlay(); stepRange(-1); });
   $("range-next").addEventListener("click", () => { stopPlay(); stepRange(1); });
