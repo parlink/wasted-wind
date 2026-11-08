@@ -451,6 +451,52 @@ def scenario(sc: Scenario):
 
 # ---------- method ----------
 
+# ---------- wind (map layer): fetched live from Open-Meteo, cached ----------
+
+OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
+OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
+_wind_cache: dict = {}
+
+
+def fetch_wind(lats: list[float], lons: list[float], day: str, recent: bool) -> list[dict]:
+    """Hourly 100 m wind speed (m/s) and direction (degrees it blows FROM) at each point for one UTC day.
+    The archive lags real time by a few days, so recent days and tomorrow come from the forecast API."""
+    import requests
+    url = OPEN_METEO_FORECAST if recent else OPEN_METEO_ARCHIVE
+    r = requests.get(url, timeout=8, params={
+        "latitude": ",".join(f"{x:.4f}" for x in lats), "longitude": ",".join(f"{x:.4f}" for x in lons),
+        "start_date": day, "end_date": day, "hourly": "wind_speed_100m,wind_direction_100m",
+        "wind_speed_unit": "ms", "timezone": "GMT"})
+    r.raise_for_status()
+    out = r.json()
+    return out if isinstance(out, list) else [out]
+
+
+@app.get("/api/wind")
+def wind(date: str):
+    """Wind at every farm for one day, for the map's arrows. 503 if Open-Meteo can't be reached
+    (venue Wi-Fi): the dashboard then hides the layer and says so."""
+    day = parse_ts(date, "date").normalize()
+    key = day.strftime("%Y-%m-%d")
+    if key not in _wind_cache:
+        farms, src = data.table("farms.csv")
+        f = farms.drop_duplicates("farm_id")[["farm_id", "lat", "lon"]].dropna()
+        recent = day >= pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=30)
+        try:
+            pts = fetch_wind(f["lat"].tolist(), f["lon"].tolist(), key, recent)
+        except Exception as e:  # noqa: BLE001 - offline or API trouble: say so, never crash the page
+            raise HTTPException(503, f"wind not available: {type(e).__name__}")
+        farms_out = []
+        for fid, p in zip(f["farm_id"], pts):
+            h = p.get("hourly", {})
+            farms_out.append({"farm_id": fid, "speed_ms": h.get("wind_speed_100m", []),
+                              "direction_deg": h.get("wind_direction_100m", [])})
+        _wind_cache[key] = {"date": key, "hours": [f"{key}T{h:02d}:00:00Z" for h in range(24)], "farms": farms_out,
+                            "source": "Open-Meteo forecast" if recent else "Open-Meteo archive (ERA5)",
+                            "meta": meta(src)}
+    return _wind_cache[key]
+
+
 @app.get("/api/method/calibration")
 def method_calibration():
     """Simulator with historical settings vs Part 1, both from the simulator's own inputs."""

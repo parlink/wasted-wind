@@ -228,6 +228,7 @@ async function initMap() {
   const padMap = () => map.setPadding({ top: 0, bottom: 0, left: 0, right: window.innerWidth > 820 ? $("panel").offsetWidth + 24 : 0 });
   padMap(); window.addEventListener("resize", padMap);
   map.on("zoom", syncMarkerScale); syncMarkerScale();
+  initWind();
   await new Promise((res) => (map.loaded() ? res() : map.once("load", res)));
 
   map.addSource("boundaries", { type: "geojson", data: boundaryGeoJSON() });
@@ -390,6 +391,7 @@ async function loadReveal() {
     noteSource("wind farm waste", reveal.meta);
     renderReveal();
     updateMap();
+    updateWind();
     if (state.farm) await loadFarmDetail();
   } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
 }
@@ -635,6 +637,7 @@ async function loadPredict() {
     $("pred-fake").hidden = state.tomorrow.meta.source !== "fixtures";
     renderPredict();
     updateMap();
+    updateWind();
     loadTimeMachine().catch(showError);
   } catch (e) { showError(e); } finally { tab.classList.remove("loading"); }
 }
@@ -1436,6 +1439,105 @@ function renderMethodBatteries(sc) {
   for (const c of sc.caveats || []) ul.append(el("li", {}, c));
 }
 
+// ---------- wind arrows (map layer): 100 m wind at each farm for one day, from Open-Meteo via /api/wind ----------
+
+state.wind = { on: false, date: null, data: null, hour: 12, timer: null, error: null };
+
+function windDate() {   // which day the arrows are for: one picked day on History, or tomorrow on Forecast
+  if (state.tab === "predict" && state.tomorrow && state.tomorrow.farms && state.tomorrow.farms[0])
+    return state.tomorrow.farms[0].hours[0].hour_start.slice(0, 10);
+  if (state.tab === "reveal" && state.range && state.range.end - state.range.start === DAY_MS) return isoDay(state.range.start);
+  return null;
+}
+
+function windArrowImage() {   // a teal arrow pointing up (north), drawn once
+  const s = 64, c = document.createElement("canvas"); c.width = c.height = s;
+  const g = c.getContext("2d");
+  g.translate(s / 2, s / 2);
+  g.beginPath(); g.moveTo(0, -26); g.lineTo(13, -4); g.lineTo(5, -6); g.lineTo(5, 24); g.lineTo(-5, 24); g.lineTo(-5, -6);
+  g.lineTo(-13, -4); g.closePath();
+  g.fillStyle = C.planned; g.strokeStyle = "#ffffff"; g.lineWidth = 3; g.lineJoin = "round";
+  g.stroke(); g.fill();
+  return g.getImageData(0, 0, s, s);
+}
+
+function drawWind() {
+  if (!map || !map.loaded()) return;
+  if (!map.hasImage("wind-arrow")) map.addImage("wind-arrow", windArrowImage(), { pixelRatio: 2 });
+  const feats = [];
+  const d = state.wind.on && state.wind.data;
+  if (d) {
+    for (const w of d.farms) {
+      const f = state.farms.find((x) => x.farm_id === w.farm_id);
+      const sp = w.speed_ms[state.wind.hour], dir = w.direction_deg[state.wind.hour];
+      if (!f || sp == null || dir == null) continue;
+      // beside the turbine, pointing where the wind blows TO (direction is where it comes from)
+      feats.push({ type: "Feature", geometry: { type: "Point", coordinates: [f.lon + 0.16, f.lat] },
+        properties: { rot: (dir + 180) % 360, speed: sp, label: `${nf(0).format(sp)}` } });
+    }
+  }
+  const data = { type: "FeatureCollection", features: feats };
+  if (map.getSource("wind")) { map.getSource("wind").setData(data); return; }
+  map.addSource("wind", { type: "geojson", data });
+  map.addLayer({ id: "wind", type: "symbol", source: "wind", layout: {
+    "icon-image": "wind-arrow", "icon-rotate": ["get", "rot"], "icon-rotation-alignment": "map", "icon-allow-overlap": true,
+    "icon-size": ["interpolate", ["linear"], ["get", "speed"], 0, 0.35, 25, 1.05],
+    "text-field": ["get", "label"], "text-size": 10, "text-offset": [0, 1.6], "text-allow-overlap": true,
+    "text-font": ["Noto Sans Regular"] },
+    paint: { "text-color": C.ink2, "text-halo-color": "#ffffff", "text-halo-width": 1.2 } });
+}
+
+function renderWindLabel() {
+  const d = state.wind.data, label = $("wind-label");
+  if (!state.wind.on) return;
+  if (state.wind.error) { label.textContent = state.wind.error; return; }
+  if (!d) { label.textContent = windDate() ? "Loading wind…" : "Pick one day on History (Day), or open Forecast, to see its wind."; return; }
+  const sp = d.farms.map((w) => w.speed_ms[state.wind.hour]).filter((x) => x != null);
+  const avg = sp.length ? sp.reduce((a, b) => a + b, 0) / sp.length : null;
+  label.textContent = `${dayFmt.format(new Date(`${d.date}T00:00:00Z`))}, ${String(state.wind.hour).padStart(2, "0")}:00 UTC` +
+    (avg != null ? ` · average ${nf(1).format(avg)} m/s at 100 m` : "") + ` · arrows point where the wind blows; numbers are m/s · ${d.source}`;
+}
+
+async function updateWind() {
+  const day = state.wind.on ? windDate() : null;
+  $("wind-hour").disabled = $("wind-play").disabled = !day;
+  if (!day) { state.wind.data = null; state.wind.error = null; stopWindPlay(); drawWind(); renderWindLabel(); return; }
+  if (!state.wind.data || state.wind.data.date !== day) {
+    state.wind.data = null; state.wind.error = null; renderWindLabel(); drawWind();
+    try {
+      const d = await api(`/api/wind?date=${day}`);
+      if (windDate() !== day) return;   // moved on meanwhile
+      state.wind.data = d;
+    } catch (e) {
+      state.wind.error = "Wind isn't available right now (no connection to the weather service).";
+    }
+  }
+  drawWind(); renderWindLabel();
+}
+
+function stopWindPlay() {
+  if (state.wind.timer) clearInterval(state.wind.timer);
+  state.wind.timer = null; $("wind-play").textContent = "▶";
+}
+
+function initWind() {
+  $("wind-toggle").addEventListener("click", () => {
+    state.wind.on = !state.wind.on;
+    $("wind-toggle").setAttribute("aria-pressed", String(state.wind.on));
+    $("wind-body").hidden = !state.wind.on;
+    if (!state.wind.on) stopWindPlay();
+    updateWind();
+  });
+  $("wind-hour").addEventListener("input", (e) => { stopWindPlay(); state.wind.hour = Number(e.target.value); drawWind(); renderWindLabel(); });
+  $("wind-play").addEventListener("click", () => {
+    if (state.wind.timer) return stopWindPlay();
+    $("wind-play").textContent = "❚❚";
+    state.wind.timer = setInterval(() => {
+      state.wind.hour = (state.wind.hour + 1) % 24; $("wind-hour").value = state.wind.hour; drawWind(); renderWindLabel();
+    }, 700);
+  });
+}
+
 // ---------- tabs, intro, boot ----------
 
 function setTab(tab) {
@@ -1447,6 +1549,7 @@ function setTab(tab) {
   if (tab !== "autopilot" && state.ap) stopApReplay();
   drawBatteryMarkers();
   drawSubsea();
+  updateWind();
   if (tab === "predict") loadPredict(); else if (tab === "reveal") { renderReveal(); updateMap(); loadFarmDetail().catch(showError); }
   else if (tab === "simulate") loadSimulate();
   else if (tab === "autopilot") { loadAutopilot(); updateMap(); }
