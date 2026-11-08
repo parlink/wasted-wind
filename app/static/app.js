@@ -71,6 +71,7 @@ function fmtCompact(x, prefix = "") {
   return `${prefix}${nf(Math.abs(v) >= 100 ? 0 : 1).format(v)}${s}`;
 }
 const fmtPct = (x) => (x == null ? "–" : `${nf(0).format(x * 100)}%`);
+const pct1 = (x) => (x == null ? "–" : `${nf(1).format(x * 100)}%`);   // where a 1-point difference matters
 const dayFmt = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 const shortFmt = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
 const hourFmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
@@ -1140,7 +1141,7 @@ function renderBatteryList() {
         field("efficiency %", "efficiency", 80, 95, 1)),
       el("div", { class: "fields" },
         choice("Connected", "site", [["farm", "At the nearest wind farm"], ["grid", "To the grid (whole zone)"]]),
-        choice("Planned by", "dispatcher", [["rule", "Simple rules"], ["lp", "Optimiser"]])),
+        choice("Planned by", "dispatcher", [["rule", "Simple rules"], ["lp", "Optimiser"], ["lp_band", "Optimiser, plans for the high end"]])),
       el("div", { class: "note battery-note", "data-id": b.battery_id, style: { gridColumn: "1 / -1", margin: "0" } }, batteryNote(b))));
   }
 }
@@ -1204,12 +1205,17 @@ let apInit = false;
 function apHasLpPlanner() {   // #13: the LP also plans reactive/forecast batteries
   return state.ap.scorecard.results.some((r) => r.strategy === "forecast" && r.dispatcher === "lp");
 }
+function apHasBandPlanner() {   // #52: the LP planning towards the high end of the forecast band
+  return state.ap.scorecard.results.some((r) => r.strategy === "forecast" && r.dispatcher === "lp_band");
+}
+// the no-forecast battery has no band to plan for, so it is compared under the plain optimiser
+const apPlannerFor = (strategy) => (strategy === "reactive" && state.ap.planner === "lp_band" ? "lp" : state.ap.planner);
 
 function apResults() {
   const sc = state.ap.scorecard;
   // each strategy under the chosen planner (rule rows where that planner has none, e.g. do nothing);
   // "perfect" is always the optimiser's true ceiling once it exists
-  const pick = (strategy) => sc.results.find((r) => r.strategy === strategy && r.dispatcher === state.ap.planner)
+  const pick = (strategy) => sc.results.find((r) => r.strategy === strategy && r.dispatcher === apPlannerFor(strategy))
     || sc.results.find((r) => r.strategy === strategy && r.dispatcher === "rule");
   const out = {};
   for (const k of ["do_nothing", "reactive", "forecast"]) { const r = pick(k); if (r) out[k] = r; }
@@ -1221,7 +1227,7 @@ function apResults() {
 
 function holdoutText(sc) {
   const h = sc.holdout && sc.holdout.capture_ratio;
-  const p = state.ap.planner, f = h && h[`forecast/${p}`], r = h && h[`reactive/${p}`];
+  const f = h && h[`forecast/${apPlannerFor("forecast")}`], r = h && h[`reactive/${apPlannerFor("reactive")}`];
   if (f == null || r == null) return "";
   return `On months the planning rules were not tuned on (${sc.holdout.months.join(", ")}): ` +
     `${fmtPct(f)} vs ${fmtPct(r)}.`;
@@ -1266,8 +1272,15 @@ async function loadApDay() {
     const q = new URLSearchParams({ strategy: state.ap.strategy });
     if (state.ap.date) q.set("date", state.ap.date);
     if (state.ap.battery) q.set("battery_id", state.ap.battery);
-    if (state.ap.strategy !== "perfect") q.set("dispatcher", state.ap.planner);
-    const day = await api(`/api/autopilot/schedule?${q}`);
+    if (state.ap.strategy !== "perfect") q.set("dispatcher", apPlannerFor(state.ap.strategy));
+    let day = await api(`/api/autopilot/schedule?${q}`);
+    // switching strategy or planner can leave the chosen day outside the new one's range (e.g. the live
+    // day exists for the plain optimiser only): then show that planner's latest day instead of an empty one
+    if (!day.batteries.length && day.available && state.ap.date &&
+        (state.ap.date < day.available.first || state.ap.date > day.available.last)) {
+      q.set("date", day.available.last);
+      day = await api(`/api/autopilot/schedule?${q}`);
+    }
     state.ap.day = day;
     noteSource("battery schedules", day.meta);
     if (day.available) {
@@ -1387,6 +1400,7 @@ async function loadAutopilot() {
       $("ap-strategy").addEventListener("change", (e) => { state.ap.strategy = e.target.value; loadApDay(); });
       const planner = $("ap-planner");
       planner.hidden = !apHasLpPlanner();
+      planner.querySelector('option[value="lp_band"]').hidden = !apHasBandPlanner();
       if (apHasLpPlanner()) state.ap.planner = "lp";
       planner.value = state.ap.planner;
       planner.addEventListener("change", (e) => { state.ap.planner = e.target.value; renderScorecard(); loadApDay(); });
@@ -1481,6 +1495,13 @@ function renderMethodBatteries(sc) {
     (lp ? "the best schedule possible with perfect hindsight (a linear programme, a true ceiling)."
       : "the same rules given perfect knowledge of the day.") +
     (sc.holdout ? ` The planning rules were tuned on other months; ${sc.holdout.months.join(", ")} are held out.` : "");
+  const bw = sc.band_weight, hold = sc.holdout && sc.holdout.capture_ratio;
+  if (bw && hold && hold["forecast/lp_band"] != null && hold["forecast/lp"] != null) {
+    $("method-basis").textContent += ` A third planner plans for waste between the likely value and the high end of the ` +
+      `forecast's range (weight ${bw.chosen}, chosen on ${bw.selected_on.join(", ")}), because the forecast's misses are storms ` +
+      `above its range. On the held-out months it earns ${pct1(hold["forecast/lp_band"])} of the maximum, vs ` +
+      `${pct1(hold["forecast/lp"])} for the plain optimiser.`;
+  }
   const ul = clear($("method-caveats"));
   for (const c of sc.caveats || []) ul.append(el("li", {}, c));
 }

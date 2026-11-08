@@ -42,7 +42,7 @@ import numpy as np
 import pandas as pd
 
 from dispatch import rule_based
-from dispatch import optimiser
+from dispatch import band, optimiser
 from dispatch.optimiser import hindsight_bound
 from dispatch.rule_based import H, plan_day
 
@@ -153,16 +153,21 @@ def load_inputs():
         waste = g.curtailed_mwh_a.sum().reindex(hist).fillna(0.0)
         paid = (-(c.bid_price_gbp_mwh * c.curtailed_mwh_a)).groupby(c.period_start).sum()
         avoided_price = (paid / g.curtailed_mwh_a.sum()).reindex(hist)       # GBP per MWh not wasted
-        f = fc[fc.farm_id == b["farm_id"]].set_index("hour_start").curtailed_mwh_pred
-        half = pd.concat([f, f.set_axis(f.index + pd.Timedelta(minutes=30))]).sort_index() / 2
-        farm[b["battery_id"]] = {"waste": waste.to_numpy(), "fc": half.reindex(hist).to_numpy(),
-                                 "avoided_price": avoided_price.to_numpy()}
+        fb = fc[fc.farm_id == b["farm_id"]].set_index("hour_start")
+
+        def halves(col):   # hourly MWh -> each half hour gets half, NaN where missing
+            if col not in fb:
+                return np.full(len(hist), np.nan)
+            f = fb[col]
+            return (pd.concat([f, f.set_axis(f.index + pd.Timedelta(minutes=30))]).sort_index() / 2).reindex(hist).to_numpy()
+        farm[b["battery_id"]] = {"waste": waste.to_numpy(), "fc": halves("curtailed_mwh_pred"),
+                                 "fc_p90": halves("curtailed_mwh_p90"), "avoided_price": avoided_price.to_numpy()}
     return periods, hist, price, head, farm
 
 
 # ---------- replay ----------
 
-DISPATCHERS = {"rule": plan_day, "lp": optimiser.plan_day}
+DISPATCHERS = {"rule": plan_day, "lp": optimiser.plan_day, band.NAME: band.plan_day}
 
 
 def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: str = "rule",
@@ -187,6 +192,9 @@ def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: 
                 sig, exp_p, exp_h = actual_w, actual_p, actual_h
             else:
                 sig = np.zeros(48) if strategy == "reactive" else np.nan_to_num(f["fc"][sl])
+                if dispatcher == band.NAME and strategy == "forecast":   # #52: plan towards the band's high end
+                    sig = band.band_signal(f["fc"][sl], f.get("fc_p90", np.full(len(hist), np.nan))[sl],
+                                           battery.get("band_weight", band.DEFAULT_WEIGHT))
                 fc_p = price_fc(day_start) if price_fc is not None else None
                 exp_p = fc_p if fc_p is not None else expected_price(price, d)
                 if stats is not None and price_fc is not None:
@@ -223,6 +231,18 @@ def lp_rows(battery: dict, hist, price, head_zone, f) -> pd.DataFrame:
 
 def _revenue(df: pd.DataFrame, months) -> float:
     return float(df.loc[df.period_start.dt.strftime("%Y-%m").isin(months), "revenue_gbp"].sum())
+
+
+def choose_band_weight(bats, hist, price, head, farm) -> dict:
+    """#52: pick the band weight by forecast-battery revenue on TUNE_MONTHS only (LP planner)."""
+    scores = {}
+    for w in band.WEIGHT_GRID:
+        scores[w] = round(sum(_revenue(replay(dict(b, band_weight=w), "forecast", hist, price, head[b["zone"]],
+                                              farm[b["battery_id"]], band.NAME), TUNE_MONTHS) for b in bats), 0)
+    best = max(scores, key=scores.get)
+    log.info("band weight on %s: %s -> %s", "/".join(TUNE_MONTHS), scores, best)
+    return {"chosen": best, "selected_on": list(TUNE_MONTHS), "forecast_revenue_gbp_by_weight": scores,
+            "signal": "point + weight * (p90 - point)"}
 
 
 def choose_fraction(hist, price, head, farm) -> dict:
@@ -292,6 +312,9 @@ def main():
               for b in bats for s in STRATEGIES]
     frames += [replay(b, s, hist, price, head[b["zone"]], farm[b["battery_id"]], "lp")
                for b in bats for s in ("reactive", "forecast")]
+    band_tuning = choose_band_weight(bats, hist, price, head, farm)
+    frames += [replay(dict(b, band_weight=band_tuning["chosen"]), "forecast", hist, price, head[b["zone"]],
+                      farm[b["battery_id"]], band.NAME) for b in bats]
     frames += [lp_rows(b, hist, price, head[b["zone"]], farm[b["battery_id"]]) for b in bats]
     sched = pd.concat(frames, ignore_index=True)
     path = PROCESSED / "schedules.parquet"
@@ -309,7 +332,7 @@ def main():
                                                           * g.period_start.map(ap).fillna(0)).sum())
     tot = sched.groupby("key")[["captured_curtailment_mwh", "revenue_gbp"]].sum()
     keys = ["do_nothing/rule", "reactive/rule", "forecast/rule", "reactive/lp", "forecast/lp",
-            "perfect/rule", "perfect/lp"]
+            f"forecast/{band.NAME}", "perfect/rule", "perfect/lp"]
 
     ratios = capture_ratios(tot.revenue_gbp.to_dict())
     hold = {k: _revenue(sched[sched.key == k], HOLDOUT_MONTHS) for k in keys}
@@ -332,7 +355,8 @@ def main():
            "holdout": {"months": list(HOLDOUT_MONTHS),
                        "capture_ratio": capture_ratios(hold),
                        "revenue_gbp": {k: round(v, 0) for k, v in hold.items()}},
-           "plan_waste_fraction": tuning}
+           "plan_waste_fraction": tuning,
+           "band_weight": band_tuning}
     (PROCESSED / "scorecard.json").write_text(json.dumps(out, indent=2))
     log.info("wrote schedules.parquet (%d rows) and scorecard.json", len(sched))
     for r in out["results"]:
