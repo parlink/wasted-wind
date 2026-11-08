@@ -92,6 +92,9 @@ class Inputs:
     data_gaps: dict = field(default_factory=dict)       # residual/limit/price gaps and how they were filled
     dropped_bmus: list = field(default_factory=list)    # in curtailment but not in farms.csv
     dropped_curtailed_mwh: float = 0.0
+    unit_lat: np.ndarray | None = None   # (U,) farm centroid of each unit, for batteries sited at a farm
+    unit_lon: np.ndarray | None = None
+    fc_farm: dict = field(default_factory=dict)   # farm_id -> (T,) day-ahead forecast waste, MWh per half hour
     temp_n: np.ndarray | None = None   # (T,) zone temperature, deg C, NaN where unknown (heat-pump lever)
     temp_s: np.ndarray | None = None
 
@@ -190,6 +193,13 @@ def _load(signature: tuple, source: str) -> Inputs:
     )
     inp.data_gaps = gaps
     inp.dropped_bmus = dropped
+    if {"lat", "lon"} <= set(units.columns):
+        inp.unit_lat, inp.unit_lon = units["lat"].to_numpy(float), units["lon"].to_numpy(float)
+    if len(f):
+        ff = f.pivot_table(index="hour_start", columns="farm_id", values="curtailed_mwh_pred", aggfunc="sum")
+        ff.index = pd.DatetimeIndex(ff.index)
+        ff = ff.reindex(periods.floor("h")) / 2
+        inp.fc_farm = {c: ff[c].to_numpy(float) for c in ff.columns}
     if "temperature_2m_c" in resid.columns:   # optional (#45): heat pumps follow real cold days
         for z, attr in (("north_scotland", "temp_n"), ("south_scotland", "temp_s")):
             t = resid[resid["zone"] == z].set_index("period_start")["temperature_2m_c"].reindex(periods)
@@ -276,6 +286,32 @@ def planning_signals(inp: Inputs, q: str, waste_n: np.ndarray, waste_s: np.ndarr
     return sig_n, np.nan_to_num(fc_s), int((np.isnan(fc_n) & np.isnan(fc_s)).sum()), int(np.isnan(fc_s).sum())
 
 
+FARM_RADIUS_KM = 20.0
+
+
+def _km(lat1, lon1, lat2, lon2):
+    """Great-circle distance in km (haversine)."""
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    a = np.sin((p2 - p1) / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(np.radians(lon2 - lon1) / 2) ** 2
+    return 2 * 6371.0 * np.arcsin(np.sqrt(a))
+
+
+def farm_units(inp: Inputs, battery: dict) -> np.ndarray:
+    """Units a battery sited at a wind farm shares a connection with: every unit of every farm within
+    radius_km in the battery's own zone, else the nearest farm in that zone. Empty for a grid battery."""
+    if battery.get("site", "grid") != "farm":
+        return np.zeros(len(inp.bmu), bool)
+    if inp.unit_lat is None or inp.unit_lon is None:
+        raise ValueError("a battery sited at a farm needs farm coordinates (lat/lon in farms.csv)")
+    in_zone = inp.north if battery["zone"] == "north_scotland" else ~inp.north
+    d = _km(battery["lat"], battery["lon"], inp.unit_lat, inp.unit_lon)
+    d = np.where(in_zone & np.isfinite(d), d, np.inf)
+    near = d <= float(battery.get("radius_km") or FARM_RADIUS_KM)
+    if not near.any() and np.isfinite(d).any():
+        near = inp.farm == inp.farm[int(np.argmin(d))]   # nearest farm, all its units
+    return near
+
+
 def _north_room(ex4, ex6, flow4, lk_n):
     """MW of would-be waste a North battery can remove. Charging cuts the North surplus: first the B4 overflow,
     then the flow over B4 (which is what relieves B6). With a North subsea link, charging past that point only
@@ -304,16 +340,58 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
     price_exp = _price_expectation(inp.price, days)
     sig_n, sig_s, fb_n, fb_s = planning_signals(inp, sc["forecast_quality"], waste_n, waste_s)
 
+    cut0 = (phys or {}).get("cut0")            # (T, U) would-be waste per unit, for batteries sited at a farm
+    c4, c6 = (phys or {}).get("cut0_b4"), (phys or {}).get("cut0_b6")   # its B4 and B6 parts
+    cut_after = np.zeros_like(cut0) if cut0 is not None else None       # what is left after every battery charged
     plans = []
     for b in bats:
         north = b["zone"] == "north_scotland"
-        plans.append({"north": north, "sig": sig_n if north else sig_s, "fallback": fb_n if north else fb_s,
-                      "soc": 0.0, "head": head_n if north else head_s,
-                      "charge": np.zeros(T), "discharge": np.zeros(T), "soc_mwh": np.zeros(T)})
+        units = farm_units(inp, b)
+        p = {"north": north, "sig": sig_n if north else sig_s, "fallback": fb_n if north else fb_s,
+             "soc": 0.0, "head": head_n if north else head_s, "units": units, "farm_ids": sorted(set(inp.farm[units])),
+             "charge": np.zeros(T), "discharge": np.zeros(T), "soc_mwh": np.zeros(T)}
+        if units.any() and cut0 is not None:
+            # it can only ever see and catch its own farms' waste
+            local = cut0[:, units].sum(axis=1) * H
+            q = sc["forecast_quality"]
+            if q == "perfect":
+                p["sig"] = local
+            elif q == "none":
+                p["sig"] = np.zeros(T)
+            else:
+                fc = [inp.fc_farm[f][:T] for f in p["farm_ids"] if f in inp.fc_farm]
+                p["sig"] = np.nansum(fc, axis=0) if fc else np.zeros(T)
+                p["fallback"] = int(np.all(np.isnan(fc), axis=0).sum()) if fc else T
+        plans.append(p)
+
+    everyone = np.ones(len(inp.bmu), bool)
+
+    def draw(c, units, b4_first):
+        """Use up c MW of the units' remaining waste: B4 part first for a North battery (charging cuts the
+        North surplus, so the B4 overflow goes first), then B6; only B6 for a South battery, then anything left
+        (the physics guarantees the total is there; the split between parts is an accounting choice)."""
+        pools = [(rem4, units), (rem6, units)] if b4_first else [(rem6, units)]
+        pools += [(rem4, units), (rem6, everyone), (rem4, everyone)]
+        for pool, m in pools:
+            if c <= 1e-12:
+                break
+            w = pool[m]
+            tot = float(w.sum())
+            if tot <= 0:
+                continue
+            take = min(c, tot)
+            pool[m] = np.maximum(w - take * w / tot, 0.0)
+            c -= take
 
     def charge(b, p, want, cap):
         room = (b["energy_mwh"] - p["soc"]) / (H * b["efficiency"])
-        return max(0.0, min(want, b["power_mw"], room, cap))
+        farm = cut0 is not None and p["units"].any()
+        if farm:   # a farm battery: only its own farms' remaining waste this half hour
+            cap = min(cap, float(rem4[p["units"]].sum() + rem6[p["units"]].sum()))
+        c = max(0.0, min(want, b["power_mw"], room, cap))
+        if c > 0 and cut0 is not None:   # every battery's charge comes out of somebody's waste
+            draw(c, p["units"] if farm else (inp.north if p["north"] else everyone), p["north"])
+        return c
 
     net_n, net_s = np.zeros(T), np.zeros(T)
     phys = phys or {}
@@ -324,6 +402,8 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
         day_plans = [planner_for(b)[0](b, p["sig"][sl], price_exp[d], p["head"][sl], p["soc"]) for b, p in zip(bats, plans)]
         for i in range(d * 48, d * 48 + 48):
             j = i - d * 48
+            if cut0 is not None:   # each unit's waste not yet caught this half hour, by bottleneck
+                rem4, rem6 = c4[i].copy(), c6[i].copy()
             # charging from would-be waste: North batteries first (B4 and B6 waste), then South
             s_n = pot_n[i] + res_n[i]
             room_n = _north_room(ex4_0[i], ex6_0[i], flow4_0[i], lk_n)
@@ -357,8 +437,12 @@ def _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4_0, ex6_0, flow4_0, flow6_0
                     if p["north"]:
                         flow4 += dmw
                 p["soc_mwh"][i] = p["soc"]
+            if cut0 is not None:
+                cut_after[i] = rem4 + rem6
             net_n[i] = -cn + sum(p["discharge"][i] for p in plans if p["north"])
             net_s[i] = -cs + sum(p["discharge"][i] for p in plans if not p["north"])
+    if cut_after is not None:
+        phys["cut_after"] = cut_after
     return net_n, net_s, plans
 
 
@@ -376,6 +460,11 @@ def run_core(inp: Inputs, sc: dict) -> dict:
     phys = dict(res_n=res_n, res_s=res_s, lk_n=lk_n, lk_s=lk_s)
     ex4, ex6, flow4, flow6 = _boundaries(pot_n, pot_s, res_n, res_s, l4, l6, lk_n=lk_n, lk_s=lk_s)
     plans = []
+    hist_mw = inp.hist_curtailed_mwh / H
+    if any(b.get("site", "grid") == "farm" for b in sc["batteries"]):
+        # who would be switched off without batteries, split by bottleneck
+        phys["cut0_b4"], phys["cut0_b6"] = _cut(pot, ex4, ex6, hist_mw, inp.north, split=True)
+        phys["cut0"] = phys["cut0_b4"] + phys["cut0_b6"]
     if sc["batteries"]:
         net_n, net_s, plans = _run_batteries(inp, sc, pot_n, pot_s, l4, l6, ex4, ex6, flow4, flow6, phys)
         ex4, ex6, flow4, flow6 = _boundaries(pot_n, pot_s, res_n, res_s, l4, l6, net_n, net_s, lk_n, lk_s)
@@ -384,11 +473,24 @@ def run_core(inp: Inputs, sc: dict) -> dict:
 
     # who gets switched off: B4 waste from North units, then B6 waste from all Scottish units,
     # following each half hour's historical pattern, else cheapest first (see allocate)
-    hist_mw = inp.hist_curtailed_mwh / H
-    cut = np.zeros_like(pot)
-    cut[:, inp.north] = allocate(pot[:, inp.north], ex4, hist_mw[:, inp.north])
-    cut += allocate(pot - cut, ex6, np.maximum(hist_mw - cut, 0.0))
+    if "cut_after" in phys:
+        # each battery's charge was taken out of specific units' waste (farm batteries: their own farms), so
+        # the per-unit waste is simply what is left; row totals equal ex4 + ex6 (tested)
+        cut = phys["cut_after"]
+    else:
+        cut = _cut(pot, ex4, ex6, hist_mw, inp.north)
     return {"pot": pot, "cut_mw": cut, "ex4": ex4, "ex6": ex6, "flow4": flow4, "flow6": flow6, "plans": plans}
+
+
+def _cut(pot, ex4, ex6, hist_mw, north, split=False):
+    """Who gets switched off: B4 waste from North units, then B6 waste from all Scottish units,
+    following each half hour's historical pattern, else cheapest first (see allocate).
+    split=True returns the (B4 part, B6 part) per unit instead of their sum."""
+    b4 = np.zeros_like(pot)
+    b4[:, north] = allocate(pot[:, north], ex4, hist_mw[:, north])
+    b6 = allocate(pot - b4, ex6, np.maximum(hist_mw - b4, 0.0))
+    return (b4, b6) if split else b4 + b6
+
 
 
 # ---------- results ----------
@@ -488,6 +590,8 @@ def simulate(scenario: dict) -> dict:
             "revenue_gbp": round(float((p["discharge"][m] * H * np.nan_to_num(inp.price[m])).sum()), 1),
             "cycles": round(dis / b["energy_mwh"], 3) if b["energy_mwh"] else 0.0,
             "forecast_fallback_periods": p["fallback"],
+            "site": b.get("site", "grid"),
+            "farm_ids": p.get("farm_ids", []),
         })
     ignored = sorted(k for k, default in NOT_YET_APPLIED.items()
                      if k in (scenario or {}) and scenario[k] not in (None, default) and not _is_default_full(k, scenario[k]))

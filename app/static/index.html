@@ -226,7 +226,7 @@
       <legend>Batteries</legend>
       <div class="lever">
         <button type="button" id="place-battery" class="btn-secondary" aria-pressed="false">Place a battery on the map</button>
-        <p class="note" id="place-hint">Click anywhere in Scotland. A battery north of B4 can store wind wasted at either pinch point; one between B4 and B6 only at B6.</p>
+        <p class="note" id="place-hint">Click anywhere in Scotland. Next to a wind farm, a battery can only store that farm's wasted wind, so where you put it matters. Connected to the grid, it can store wind wasted anywhere in its zone (north of B4: at either pinch point; between B4 and B6: only at B6).</p>
         <div id="battery-list"></div>
       </div>
       <div class="lever">
@@ -427,6 +427,9 @@
           pumps follow typical Scottish monthly temperatures, not each actual day's, which overstates what they absorb (cold days tend to
           be calm); EVs charge mostly overnight; data centres are flat. Price controls change only £ and CO₂: a multiplier keeps the
           farms' order and a flat price treats them all the same, so neither changes which farms are switched off.</li>
+        <li><b>Batteries at a wind farm</b> can only store the waste of the farms within 20 km (or the nearest one). Every battery's
+          charge is taken out of specific farms' waste, so farm-by-farm results add up to the zone totals. They plan with those
+          farms' historical forecast, which doesn't know about other changes in your scenario (bigger pinch points, more wind, a new cable).</li>
       </ul>
     </div>
 

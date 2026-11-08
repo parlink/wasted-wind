@@ -326,6 +326,8 @@ class BatteryLever(_Strict):
     energy_mwh: float = Field(gt=0, le=20000)
     efficiency: float = Field(0.88, ge=0.80, le=0.95)
     dispatcher: Literal["rule", "lp"] = "rule"
+    site: Literal["grid", "farm"] = "grid"          # "farm": shares a wind farm's connection, catches only its waste
+    radius_km: float = Field(20.0, ge=1, le=100)    # farms within this distance count as "its" farms
 
 
 class WeatherLever(_Strict):
