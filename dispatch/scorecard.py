@@ -273,7 +273,10 @@ def price_forecast_effect(bats, hist, price, head, farm, hold: dict, tot: pd.Dat
             # figure mixes both; the hold-out figure is the price forecast on every day (checked above)
             "battery_days_with_price_forecast": int(len(used)),
             "battery_days_fallback_7day": int(len(fell)),
-            "months_with_price_forecast": sorted(set(used.strftime("%Y-%m")))}
+            "months_with_price_forecast": sorted(set(used.strftime("%Y-%m"))),
+            # half hours missing from a day's price forecast, filled from that day's neighbours (pipeline.price.by_day)
+            "price_forecast_days_with_filled_slots": len(lookup.filled),
+            "price_forecast_slots_filled": int(sum(lookup.filled.values()))}
         log.info("price forecast, %s: capture %.3f (7-day %.3f); hold-out %.3f (7-day %.3f)", key,
                  out[key]["capture_ratio_price_forecast"], out[key]["capture_ratio_7day"],
                  out[key]["holdout_capture_ratio_price_forecast"], out[key]["holdout_capture_ratio_7day"])

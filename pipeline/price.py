@@ -57,13 +57,28 @@ def lag_features(price: pd.Series) -> pd.DataFrame:
     return out
 
 
-def by_day(fc: pd.DataFrame):
-    """Lookup day -> 48 forecast prices (or None) from rows with period_start, price_pred_gbp_mwh."""
+MAX_FILLED_SLOTS = 4   # up to 2 hours of a day's forecast may be filled from its neighbours
+
+
+def by_day(fc: pd.DataFrame, max_fill: int = MAX_FILLED_SLOTS):
+    """Lookup day -> 48 forecast prices (or None) from rows with period_start, price_pred_gbp_mwh.
+
+    The backtest has no row where the market price itself is missing (it is the training target), so a day
+    can lack a few half hours (e.g. 3 on 2026-09-11 in data-v12). Up to `max_fill` missing half hours are
+    filled by interpolating the day's own forecast, rather than dropping the whole day back to the 7-day
+    mean; more than that returns None. `get.filled` records {day: slots filled} so the scorecard can report it."""
     s = fc.set_index("period_start").price_pred_gbp_mwh
 
     def get(day: pd.Timestamp):
-        v = s.reindex(pd.date_range(day, periods=48, freq="30min")).to_numpy()
-        return None if np.isnan(v).any() else v
+        v = s.reindex(pd.date_range(day, periods=48, freq="30min"))
+        n = int(v.isna().sum())
+        if n == 0:
+            return v.to_numpy()
+        if n > max_fill or n == 48:
+            return None
+        get.filled[day] = n
+        return v.interpolate(limit_direction="both").to_numpy()
+    get.filled = {}
     return get
 
 

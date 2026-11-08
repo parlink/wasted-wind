@@ -81,3 +81,17 @@ def test_price_forecast_by_day_returns_48_values_or_none():
     lookup = pr.by_day(fc)
     assert np.allclose(lookup(pd.Timestamp("2025-01-10T00:00Z")), np.arange(48.0))
     assert lookup(pd.Timestamp("2025-01-11T00:00Z")) is None
+
+
+def test_price_forecast_by_day_fills_a_few_missing_half_hours():
+    """#57: a day with 3 half hours missing (no market price, so no backtest row) still uses the forecast."""
+    idx = pd.date_range("2026-09-11T00:00Z", periods=48, freq="30min")
+    vals = np.arange(48.0)
+    keep = np.ones(48, bool); keep[[10, 11, 30]] = False
+    lookup = pr.by_day(pd.DataFrame({"period_start": idx[keep], "price_pred_gbp_mwh": vals[keep]}))
+    got = lookup(idx[0])
+    assert got is not None and np.allclose(got, vals)           # linear values interpolate exactly
+    assert lookup.filled == {idx[0]: 3}
+    many = np.ones(48, bool); many[:5] = False                   # 5 missing: more than allowed
+    lookup = pr.by_day(pd.DataFrame({"period_start": idx[many], "price_pred_gbp_mwh": vals[many]}))
+    assert lookup(idx[0]) is None
