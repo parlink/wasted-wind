@@ -19,7 +19,7 @@
       <option value="light">Light map</option>
       <option value="detailed">Detailed map</option>
       <option value="dark">Dark map</option>
-      <option value="satellite">Satellite</option>
+      <option value="satellite" selected>Satellite</option>
     </select>
     <button type="button" id="wind-toggle" class="btn-secondary" aria-pressed="false">Wind</button>
   </div>
@@ -520,9 +520,9 @@
       <p class="about-lead">If you know <i>today</i> how much wind will be wasted <i>tomorrow</i>, a battery can be empty and
         ready to catch it, then sell it later when the lines have room.</p>
       <div class="about-trio">
-        <div class="tile"><div class="label">1 · Measure</div><p>How much wind each farm loses, every half hour.</p></div>
-        <div class="tile"><div class="label">2 · Predict</div><p>The waste for the week ahead, farm by farm.</p></div>
-        <div class="tile"><div class="label">3 · Act</div><p>Batteries that store it and sell it, automatically.</p></div>
+        <div class="tile"><div class="label">1 · Measure</div><p>How much wind each of 33 farms loses, every half hour since January 2024.</p></div>
+        <div class="tile"><div class="label">2 · Predict</div><p>The waste up to 6 days ahead: 2.3× more accurate than a naive guess, 82% of waste events seen coming.</p></div>
+        <div class="tile"><div class="label">3 · Act</div><p>Batteries that store it and sell it automatically, earning about 27% more than without a forecast.</p></div>
       </div>
       <p class="about-proof" id="about-proof"></p>
     </section>
@@ -531,16 +531,20 @@
       <p class="about-eyebrow">What this site does</p>
       <h2>Four tabs, one story</h2>
       <ol class="about-steps">
-        <li data-go="reveal"><b>1 History</b> · how much wind was wasted, where, and what it cost</li>
-        <li data-go="predict"><b>2 Forecast</b> · the waste coming in the next 6 days</li>
-        <li data-go="autopilot"><b>3 Batteries</b> · how a battery stores it and sells it, half hour by half hour</li>
-        <li data-go="simulate"><b>4 Simulate</b> · build cables or batteries and see how much is saved</li>
+        <li data-go="reveal"><b>1 History</b> · any day, week, month or year since 2024: the wind wasted, the £ paid to
+          switch off, the gas and CO₂ instead, which power line was full, and every farm's half hours, checked two ways</li>
+        <li data-go="predict"><b>2 Forecast</b> · the next 6 days for every farm with a likely range, how accurate it is and
+          what it relies on, and a look back at any day since July 2024 exactly as it was forecast</li>
+        <li data-go="autopilot"><b>3 Batteries</b> · four real-sized batteries run by an autopilot: every half hour it stores,
+          waits or sells, with the price and the reason, replayed or live, with and without our forecast</li>
+        <li data-go="simulate"><b>4 Simulate</b> · 15 controls: bigger power lines, an undersea cable, batteries you place on the
+          map, heat pumps, electric cars, data centres, gas and carbon prices, windier weather</li>
       </ol>
       <h3>Where the data comes from (all public)</h3>
       <ul class="about-data">
-        <li><b>Elexon</b>, which runs Britain's electricity market: what each farm planned, every order to switch off, and the price paid</li>
-        <li><b>NESO</b>, which runs the grid: how much the two main power lines (B4 and B6) can carry</li>
-        <li><b>Open-Meteo</b>: weather at every farm, including forecasts exactly as they were made</li>
+        <li><b>Elexon BMRS</b> · the grid's order book: physical notifications, bid-offer acceptances, bid prices and B1610 metered output for 50 wind units, half hour by half hour</li>
+        <li><b>NESO</b> · day-ahead constraint limits and flows on the B4 and B6 transmission boundaries</li>
+        <li><b>Open-Meteo</b> · archived numerical weather prediction runs at 100 m hub height, captured 1–7 days before each hour: zero hindsight</li>
       </ul>
       <p class="about-how">How each number is made, and its limits: the <a href="#" data-go="method">Method</a> tab.</p>
     </section>

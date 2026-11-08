@@ -312,7 +312,7 @@ async function basemapStyle() {
     const t = setTimeout(() => ctl.abort(), 5000);
     const r = await fetch(BASEMAP, { signal: ctl.signal });
     clearTimeout(t);
-    if (r.ok) return BASEMAP;
+    if (r.ok) { document.body.dataset.mapView = "satellite"; return MAP_VIEWS.satellite; }   // opens on satellite
   } catch (_) { /* fall through */ }
   return { version: 8, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#eef1f3" } }] };
 }
