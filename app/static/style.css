@@ -88,9 +88,9 @@ h4 { font-size: 13px; margin: 16px 0 4px; font-weight: 600; color: var(--ink-2);
 }
 .tag-est[title] { cursor: help; }
 .tag.fake { background: #fff4d6; color: #5c4200; }
-/* badges carry meaning: blue = our own calculation, raspberry = predicted, teal = a what-if, amber = treat with care */
+/* badges carry meaning: blue = our own calculation (dashed when it is a prediction), teal = a what-if, amber = treat with care */
 .tag-est.t-est { background: #e8f1fb; color: #1d4f91; }
-.tag-est.t-forecast { background: rgba(200, 30, 106, 0.10); color: #9d1653; }
+.tag-est.t-forecast { background: #e8f1fb; color: #1d4f91; box-shadow: inset 0 0 0 1px rgba(29, 79, 145, 0.35); border: 1px dashed rgba(29, 79, 145, 0.5); padding: 1px 7px; }   /* our calculation, about the future: dashed, so raspberry only ever means wasted */
 .tag-est.t-sim { background: rgba(14, 159, 191, 0.12); color: #0b6f86; }
 .tag-est.t-approx { background: #fdf1dc; color: #8a5a00; }
 .tag.stale { background: #fdf1dc; color: #8a5a00; }   /* stale is a warning, not an error */
