@@ -8,6 +8,18 @@ const C = {
   surface: "#fcfcfb", rampZero: "#b8b6ae",
 };
 const BASEMAP = "https://tiles.openfreemap.org/styles/positron";
+const MAP_VIEWS = {
+  light: BASEMAP,
+  detailed: "https://tiles.openfreemap.org/styles/liberty",
+  dark: "https://tiles.openfreemap.org/styles/dark",
+  satellite: {   // Esri World Imagery; glyphs from OpenFreeMap so the wind arrows' labels still draw
+    version: 8, glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+    sources: { sat: { type: "raster", tileSize: 256, maxzoom: 18,
+      tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+      attribution: "Imagery © Esri, Maxar, Earthstar Geographics" } },
+    layers: [{ id: "sat", type: "raster", source: "sat" }],
+  },
+};
 // Approximate boundary lines (labelled "approximate" on the map)
 const BOUNDARIES = {
   B4: [[-6.2, 56.05], [-5.2, 56.12], [-4.4, 56.15], [-3.6, 56.28], [-2.9, 56.42], [-2.3, 56.5], [-1.4, 56.5]],
@@ -60,7 +72,8 @@ const homesFor = (twh) => (twh == null ? null : (twh * 1e6) / HOME_MWH_PER_YEAR)
 function fmtEnergy(mwh) {
   if (mwh == null) return "–";
   const a = Math.abs(mwh);
-  if (a >= 1e6) return `${nf(2).format(mwh / 1e6)} TWh`;
+  if (a >= 1e6) return `${nf(a >= 1e7 ? 1 : 2).format(mwh / 1e6)} TWh`;
+  if (a < 0.05) return "0 MWh";
   if (a >= 1e3) return `${nf(a >= 1e5 ? 0 : 1).format(mwh / 1e3)} GWh`;
   return `${nf(a >= 100 ? 0 : 1).format(mwh)} MWh`;
 }
@@ -230,12 +243,34 @@ async function basemapStyle() {
   return { version: 8, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#eef1f3" } }] };
 }
 
+function basemapIds(style) {
+  return { sources: new Set(Object.keys(style.sources || {})), layers: new Set((style.layers || []).map((l) => l.id)) };
+}
+function setMapView(view) {
+  const base = map._baseIds || { sources: new Set(), layers: new Set() };
+  document.body.dataset.mapView = view;
+  map.setStyle(MAP_VIEWS[view] || BASEMAP, {
+    transformStyle: (prev, next) => {
+      if (!prev) return next;
+      const sources = Object.fromEntries(Object.entries(prev.sources).filter(([k]) => !base.sources.has(k)));
+      const layers = prev.layers.filter((l) => !base.layers.has(l.id));
+      map._baseIds = basemapIds(next);
+      return { ...next, glyphs: next.glyphs || prev.glyphs, sources: { ...next.sources, ...sources }, layers: [...next.layers, ...layers] };
+    },
+  });
+  // images (the wind arrow) go with the old style: add it back before the wind layer needs it
+  map.once("styledata", () => { if (!map.hasImage("wind-arrow")) map.addImage("wind-arrow", windArrowImage(), { pixelRatio: 2 }); });
+}
+
 async function initMap() {
   map = new maplibregl.Map({
     container: "map", style: await basemapStyle(), center: [-4.0, 57.2], zoom: 5.6,
     attributionControl: { compact: true },
   });
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
+  // remember which layers belong to the basemap, so a view change keeps our own (farms, cables, wind)
+  map.once("style.load", () => { map._baseIds = basemapIds(map.getStyle()); });
+  $("map-view").addEventListener("change", (e) => setMapView(e.target.value));
   // the panel floats over the right of the map: keep Scotland centred in the visible part
   const padMap = () => map.setPadding({ top: 0, bottom: 0, left: 0, right: window.innerWidth > 820 ? $("panel").offsetWidth + 24 : 0 });
   padMap(); window.addEventListener("resize", padMap);
@@ -684,7 +719,10 @@ function renderPredict() {
   if (hours.length) sub.append(`For ${dayFmt.format(new Date(hours[0]))} · issued ${shortFmt.format(issued)} UTC `);
   if (stale) sub.append(el("span", { class: "tag stale" }, "stale: older than 36 h"));
   if (farms.length && total < 0.5) sub.append(el("div", {}, "The model expects the cables to have room for this wind. " +
-    "The range shows how much could still be wasted if it's wrong."));
+    "The range shows how much could still be wasted if it's wrong. ",
+    el("button", { type: "button", class: "link-btn", onclick: () => {
+      $("tm").scrollIntoView({ behavior: "smooth", block: "start" }); $("tm-storm").click();
+    } }, "See how it did on the biggest storm →")));
   if (hasRange && hours.length) sub.append(el("div", {},
     `Likely range ${fmtEnergy(p10.reduce((a, b) => a + b, 0))} – ${fmtEnergy(p90.reduce((a, b) => a + b, 0))}` +
     (sel ? " (likely range, 80% of the time)" : " (adding up each farm's likely range, so approximate)")));
@@ -1254,6 +1292,12 @@ function holdoutText(sc) {
     `${fmtPct(f)} vs ${fmtPct(r)}.`;
 }
 
+// "seagreen_bess" -> "Seagreen battery"
+function batteryName(b) {
+  const f = b.farm_id && state.farms.find((x) => x.farm_id === b.farm_id);
+  return f ? `${farmName(b.farm_id)} battery` : b.battery_id;
+}
+
 function apLpCeiling() {
   return state.ap.scorecard.results.some((r) => r.strategy === "perfect" && r.dispatcher === "lp");
 }
@@ -1261,18 +1305,24 @@ function apLpCeiling() {
 function renderScorecard() {
   const sc = state.ap.scorecard, res = apResults();
   const f = res.forecast, r = res.reactive;
-  $("ap-headline").textContent = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
+  const h = sc.holdout && sc.holdout.capture_ratio;
+  const hf = h && h[`forecast/${apPlannerFor("forecast")}`], hr = h && h[`reactive/${apPlannerFor("reactive")}`];
+  const held = hf != null && hr != null;   // the fair headline: months the planning rules never saw
+  const whole = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
+  $("ap-headline").textContent = held ? `${fmtPct(hf)} vs ${fmtPct(hr)}` : whole;
   const period = sc.period ? `${dayFmt.format(new Date(sc.period.start))} – ${dayFmt.format(new Date(new Date(sc.period.end) - 1))}` : "";
   $("ap-headline-sub").textContent = `Share of the best possible earnings a battery makes with our forecast vs with no forecast. ` +
-    `${sc.batteries.length} batteries, ${period}. ` +
+    `${sc.batteries.length} batteries. ` +
     (apLpCeiling() ? `"Best possible" = a battery that knows the future.`
       : `"Best possible" = the same rules, knowing what will happen that day.`) +
-    (holdoutText(sc) ? ` ${holdoutText(sc)}` : "");
+    (held ? ` Headline: ${monthSpan(sc.holdout.months)}, months the planning rules were never tuned on. ` +
+      `Bars and table below: the whole period, ${period} (${whole}), which includes the tuning months.`
+      : holdoutText(sc) ? ` ${holdoutText(sc)}` : "");
   const order = ["perfect", "forecast", "reactive", "do_nothing"].filter((k) => res[k]);
   hbars($("ap-ratio-bars"), order.map((k) => ({ id: k, label: STRATEGY_NAMES[k], value: res[k].capture_ratio,
     color: k === "forecast" ? C.planned : C.neutral })), { fmt: fmtPct });
   const t = clear($("ap-scorecard"));
-  t.append(el("thead", {}, el("tr", {}, el("th", {}, "Battery plans with"), el("th", { class: "num" }, "Wasted wind stored"),
+  t.append(el("thead", {}, el("tr", {}, el("th", {}, "Planned with"), el("th", { class: "num" }, "Wasted wind stored"),
     el("th", { class: "num" }, "Earned"), el("th", { class: "num" }, "Switch-off payments saved"))));
   const tb = el("tbody");
   for (const k of order) {
@@ -1282,7 +1332,7 @@ function renderScorecard() {
   }
   t.append(tb);
   $("ap-score-note").textContent = "Each battery can only store wind that was really wasted, and only sell when the cables south have room. Batteries tested: " +
-    sc.batteries.map((b) => `${b.battery_id} (${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh)`).join(", ") + ".";
+    sc.batteries.map((b) => `${batteryName(b)} (${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh)`).join(", ") + ".";
 }
 
 async function loadApDay() {
@@ -1415,7 +1465,7 @@ async function loadAutopilot() {
       apInit = true;
       const sel = clear($("ap-battery"));
       for (const b of state.ap.scorecard.batteries) sel.append(el("option", { value: b.battery_id },
-        `${b.battery_id} · ${b.zone === "north_scotland" ? "north of B4" : "between B4 and B6"} · ${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh`));
+        `${batteryName(b)} · ${b.zone === "north_scotland" ? "north of B4" : "between B4 and B6"} · ${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh`));
       state.ap.battery = (state.ap.scorecard.batteries[0] || {}).battery_id || null;
       sel.addEventListener("change", (e) => { state.ap.battery = e.target.value; loadApDay(); });
       $("ap-strategy").addEventListener("change", (e) => { state.ap.strategy = e.target.value; loadApDay(); });

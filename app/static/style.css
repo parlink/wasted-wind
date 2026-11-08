@@ -324,3 +324,10 @@ body:has(.tab.loading:not([hidden])) .loader { opacity: 1; visibility: visible; 
 .tag.live-done { background: #e3f5e8; color: #146c2e; margin-left: 6px; }
 .decision-log .tag { margin-left: 6px; font-size: 10px; }
 .block.loading > * { opacity: 0.35; transition: opacity 0.2s 0.15s; }
+
+/* map view picker + the calm-day link */
+.map-view-row { display: flex; gap: 6px; align-items: center; }
+.map-view-row select { font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface, #fff); color: inherit; }
+.link-btn { background: none; border: 0; padding: 0; font: inherit; color: var(--planned);
+  text-decoration: underline; cursor: pointer; }

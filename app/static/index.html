@@ -13,7 +13,15 @@
 <div id="map" aria-label="Map of Scottish wind farms"></div>
 <div id="map-legend" class="map-legend"></div>
 <div id="wind-ctl" class="wind-ctl">
-  <button type="button" id="wind-toggle" class="btn-secondary" aria-pressed="false">Wind</button>
+  <div class="wind-row map-view-row">
+    <select id="map-view" aria-label="Map view">
+      <option value="light">Light map</option>
+      <option value="detailed">Detailed map</option>
+      <option value="dark">Dark map</option>
+      <option value="satellite">Satellite</option>
+    </select>
+    <button type="button" id="wind-toggle" class="btn-secondary" aria-pressed="false">Wind</button>
+  </div>
   <div id="wind-body" hidden>
     <div class="wind-row">
       <button type="button" id="wind-play" class="icon-btn" aria-label="Play through the day">▶</button>
