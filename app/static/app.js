@@ -1358,27 +1358,29 @@ function onMapClickPlace(e) {
 function renderBatteryList() {
   const list = clear($("battery-list"));
   for (const b of state.sim.batteries) {
-    const choice = (label, key, opts) => el("label", {}, `${label} `,
+    const choice = (label, key, opts) => el("label", {}, el("span", {}, label),
       el("select", { onchange: (e) => { b[key] = e.target.value; renderBatteryList(); scheduleSim(); } },
         ...opts.map(([v, t]) => el("option", { value: v, selected: b[key] === v ? "" : undefined }, t))));
-    const field = (label, key, min, max, step) => el("label", {}, `${label} `,
+    const field = (label, key, min, max, step) => el("label", {}, el("span", {}, label),
       el("input", { type: "number", min, max, step, value: key === "efficiency" ? Math.round(b[key] * 100) : b[key],
         oninput: (e) => {
           const v = Number(e.target.value);
           if (!Number.isFinite(v) || v < min || v > max) return;
           b[key] = key === "efficiency" ? v / 100 : v; scheduleSim();
         } }));
+    const name = b.battery_id.replace(/^battery_(\d+)$/, "Battery $1");
     list.append(el("div", { class: "battery" },
-      el("div", {}, el("strong", {}, b.battery_id), ` · ${b.zone === "north_scotland" ? "north of B4" : "between B4 and B6"}`),
-      el("button", { type: "button", class: "remove", "aria-label": `Remove ${b.battery_id}`, onclick: () => {
-        state.sim.batteries = state.sim.batteries.filter((x) => x !== b); renderBatteryList(); drawBatteryMarkers(); scheduleSim();
-      } }, "×"),
-      el("div", { class: "fields" }, field("MW", "power_mw", 1, 5000, 10), field("MWh", "energy_mwh", 1, 20000, 10),
-        field("efficiency %", "efficiency", 80, 95, 1)),
-      el("div", { class: "fields" },
+      el("div", { class: "bhead" },
+        el("span", {}, el("strong", {}, name), ` · ${b.zone === "north_scotland" ? "north of B4" : "between B4 and B6"}`),
+        el("button", { type: "button", class: "remove", "aria-label": `Remove ${name}`, onclick: () => {
+          state.sim.batteries = state.sim.batteries.filter((x) => x !== b); renderBatteryList(); drawBatteryMarkers(); scheduleSim();
+        } }, "×")),
+      el("div", { class: "sizes" }, field("Power (MW)", "power_mw", 1, 5000, 10), field("Storage (MWh)", "energy_mwh", 1, 20000, 10),
+        field("Efficiency (%)", "efficiency", 80, 95, 1)),
+      el("div", { class: "opts" },
         choice("Connected", "site", [["farm", "At the nearest wind farm"], ["grid", "To the grid (whole zone)"]]),
         choice("Planned by", "dispatcher", [["rule", "Simple rules"], ["lp", "Optimiser"], ["lp_band", "Optimiser, plans for the high end"]])),
-      el("div", { class: "note battery-note", "data-id": b.battery_id, style: { gridColumn: "1 / -1", margin: "0" } }, batteryNote(b))));
+      el("div", { class: "note battery-note", "data-id": b.battery_id, style: { margin: "0" } }, batteryNote(b))));
   }
 }
 
