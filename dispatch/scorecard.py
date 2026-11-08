@@ -166,8 +166,11 @@ DISPATCHERS = {"rule": plan_day, "lp": optimiser.plan_day}
 
 
 def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: str = "rule",
-           price_fc=None) -> pd.DataFrame:
-    """price_fc: optional day -> 48 expected prices (pipeline.price.by_day); else the 7-day mean."""
+           price_fc=None, stats: dict | None = None) -> pd.DataFrame:
+    """price_fc: optional day -> 48 expected prices (pipeline.price.by_day); else the 7-day mean.
+    stats: optional dict, filled with the planned days that used the price forecast ("forecast_days") and
+    those that fell back to the 7-day mean ("fallback_days"), so a silent lookup failure can't pass as
+    "no gain" (#57 review)."""
     days = len(hist) // 48 - PRE_DAYS          # the first PRE_DAYS days are history only
     soc, rows = 0.0, []
     for d in range(PRE_DAYS, PRE_DAYS + days):
@@ -186,6 +189,8 @@ def replay(battery: dict, strategy: str, hist, price, head_zone, f, dispatcher: 
                 sig = np.zeros(48) if strategy == "reactive" else np.nan_to_num(f["fc"][sl])
                 fc_p = price_fc(day_start) if price_fc is not None else None
                 exp_p = fc_p if fc_p is not None else expected_price(price, d)
+                if stats is not None and price_fc is not None:
+                    stats.setdefault("forecast_days" if fc_p is not None else "fallback_days", []).append(day_start)
                 exp_h = head_zone[(d - 2) * 48:(d - 1) * 48]    # same half hour on D-2
             plan = DISPATCHERS[dispatcher](battery, sig, exp_p, exp_h, soc)
             out = execute(battery, plan, actual_w, actual_p, actual_h, soc, plan["reason"])
@@ -247,8 +252,15 @@ def price_forecast_effect(bats, hist, price, head, farm, hold: dict, tot: pd.Dat
     out = {}
     for strat in ("forecast", "reactive"):
         key = f"{strat}/lp"
-        rev = pd.concat([replay(b, strat, hist, price, head[b["zone"]], farm[b["battery_id"]], "lp", lookup)
+        stats: dict = {}
+        rev = pd.concat([replay(b, strat, hist, price, head[b["zone"]], farm[b["battery_id"]], "lp", lookup, stats)
                          for b in bats], ignore_index=True)
+        used = pd.DatetimeIndex(stats.get("forecast_days", []))
+        fell = pd.DatetimeIndex(stats.get("fallback_days", []))
+        held_fell = fell[fell.strftime("%Y-%m").isin(HOLDOUT_MONTHS)]
+        if len(held_fell):   # the hold-out comparison must be the price forecast on every day, or it means nothing
+            raise RuntimeError(f"price forecast missing on {len(held_fell)} battery-days in the hold-out months "
+                               f"(first {held_fell.min():%Y-%m-%d}); check price_forecast.parquet covers {HOLDOUT_MONTHS}")
         full, held = float(rev.revenue_gbp.sum()), _revenue(rev, HOLDOUT_MONTHS)
         out[key] = {
             "capture_ratio_7day": round(float(tot.loc[key, "revenue_gbp"]) / ceiling, 4),
@@ -256,7 +268,12 @@ def price_forecast_effect(bats, hist, price, head, farm, hold: dict, tot: pd.Dat
             "holdout_capture_ratio_7day": round(hold[key] / ceiling_hold, 4),
             "holdout_capture_ratio_price_forecast": round(held / ceiling_hold, 4),
             "revenue_gbp_7day": round(float(tot.loc[key, "revenue_gbp"]), 0),
-            "revenue_gbp_price_forecast": round(full, 0)}
+            "revenue_gbp_price_forecast": round(full, 0),
+            # outside the price backtest months the plan falls back to the 7-day mean, so the full-period
+            # figure mixes both; the hold-out figure is the price forecast on every day (checked above)
+            "battery_days_with_price_forecast": int(len(used)),
+            "battery_days_fallback_7day": int(len(fell)),
+            "months_with_price_forecast": sorted(set(used.strftime("%Y-%m")))}
         log.info("price forecast, %s: capture %.3f (7-day %.3f); hold-out %.3f (7-day %.3f)", key,
                  out[key]["capture_ratio_price_forecast"], out[key]["capture_ratio_7day"],
                  out[key]["holdout_capture_ratio_price_forecast"], out[key]["holdout_capture_ratio_7day"])

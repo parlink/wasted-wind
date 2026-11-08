@@ -245,3 +245,47 @@ def test_lp_ceiling_beats_every_replay_over_the_period():
     tot = s.groupby(s.strategy + "/" + s.dispatcher).revenue_gbp.sum()
     for k in ("reactive/rule", "forecast/rule", "reactive/lp", "forecast/lp", "perfect/rule"):
         assert tot["perfect/lp"] >= tot[k] - 1e-6, k
+
+
+
+# ---------- #51 / #57 review: the price-forecast path of replay ----------
+
+def _synthetic(days_extra=20, seed=11):
+    rng = np.random.default_rng(seed)
+    days = sc.PRE_DAYS + days_extra
+    hist = pd.date_range("2026-08-01T00:00Z", periods=48 * days, freq="30min")
+    price = rng.normal(70, 35, len(hist))
+    waste = np.where(rng.random(len(hist)) < 0.25, rng.uniform(0, 120, len(hist)), 0.0)
+    head = np.where(waste > 0, 0.0, rng.uniform(0, 400, len(hist)))
+    f = {"waste": waste, "fc": waste * rng.uniform(0.5, 1.5, len(hist)), "avoided_price": np.full(len(hist), 30.0)}
+    return hist, price, head, f
+
+
+def test_price_forecast_equal_to_the_7day_mean_changes_nothing():
+    """A stub forecast that returns exactly the 7-day mean must give the identical replay: only exp_p is swapped."""
+    hist, price, head, f = _synthetic()
+    b = sc.BATTERIES[0]
+    day_index = {hist[d * 48]: d for d in range(len(hist) // 48)}
+    stub = lambda day: sc.expected_price(price, day_index[day])   # noqa: E731
+    for strat in ("forecast", "reactive"):
+        base = sc.replay(b, strat, hist, price, head, f, "lp")
+        stats: dict = {}
+        same = sc.replay(b, strat, hist, price, head, f, "lp", stub, stats)
+        pd.testing.assert_frame_equal(base, same)
+        assert len(stats["forecast_days"]) == len(hist) // 48 - sc.PRE_DAYS and "fallback_days" not in stats
+
+
+def test_price_forecast_is_used_and_fallbacks_are_counted():
+    hist, price, head, f = _synthetic()
+    b = sc.BATTERIES[0]
+    days = [hist[d * 48] for d in range(len(hist) // 48)]
+    perfect = {day: price[i * 48:(i + 1) * 48] for i, day in enumerate(days)}
+    half = {day: v for k, (day, v) in enumerate(perfect.items()) if k % 2 == 0}   # every other day missing
+    stats: dict = {}
+    sc.replay(b, "forecast", hist, price, head, f, "lp", half.get, stats)
+    assert stats["forecast_days"] and stats["fallback_days"]
+    assert len(stats["forecast_days"]) + len(stats["fallback_days"]) == len(days) - sc.PRE_DAYS
+    # knowing tomorrow's prices exactly can't earn less than guessing them from last week
+    good = sc.replay(b, "forecast", hist, price, head, f, "lp", perfect.get).revenue_gbp.sum()
+    base = sc.replay(b, "forecast", hist, price, head, f, "lp").revenue_gbp.sum()
+    assert good >= base - 1e-6
