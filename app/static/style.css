@@ -312,3 +312,4 @@ body:has(.tab.loading:not([hidden])) .loader { opacity: 1; visibility: visible; 
 .action-strip span.planned { opacity: 0.55; background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.55) 0 2px, transparent 2px 5px); }
 .tag.live-done { background: #e3f5e8; color: #146c2e; margin-left: 6px; }
 .decision-log .tag { margin-left: 6px; font-size: 10px; }
+.block.loading > * { opacity: 0.35; transition: opacity 0.2s 0.15s; }
