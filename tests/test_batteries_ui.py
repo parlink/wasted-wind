@@ -49,9 +49,10 @@ def test_the_replay_highlight_follows_grouped_log_rows():
 
 
 def test_the_tour_opens_more_options_before_choosing_a_planner():
+    # the planner select sits under "More options": any tour step that sets it must open that first
     cfg = (STATIC / "tour-config.js").read_text(encoding="utf-8")
-    step = re.search(r'\{ id: "planner", do: \[(.*?)\], show', cfg).group(1)
-    assert step.index('"openMore"') < step.index('"ap.planner"')
+    for step in re.findall(r'do: \[(.*?"ap\.planner".*?)\], show', cfg):
+        assert '"openMore"' in step and step.index('"openMore"') < step.index('"ap.planner"')
     assert "openMore:" in cfg
 
 

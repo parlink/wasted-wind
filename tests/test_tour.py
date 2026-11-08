@@ -73,7 +73,7 @@ def test_every_step_refers_to_a_defined_target_tab_and_function():
 
 def test_engine_helpers_exist_in_the_app():
     # tour-config.js calls these app functions; if one is renamed, this says which
-    for fn in ("setTab", "stopApReplay", "toggleApReplay"):
+    for fn in ("setTab", "stopApReplay", "toggleApReplay", "selectFarm", "setPlacing", "onMapClickPlace"):
         assert re.search(rf"\bfunction {fn}\(", APP), f"app.js no longer has {fn}()"
     for fn in ("tab", "isRealData", "isReady", "beforeStep"):
         assert fn in FUNCS, f"the engine needs FUNCS.{fn}"
@@ -176,3 +176,33 @@ def test_spotlight_border_stays_visible_on_lightly_dimmed_steps():
     css = (STATIC / "tour.css").read_text(encoding="utf-8")
     spot = re.search(r"\.tour-spot \{([^}]*)\}", css).group(1)
     assert "var(--tour-spot-outline)" in spot and "--tour-spot-outline:" in css
+
+
+def _tabs_per_step(text):
+    """The tab each step opens (its first ["tab", ...] action)."""
+    return re.findall(r'\{ id: "[\w-]+", do: \[\["tab", "(\w+)"\]', text)
+
+
+def test_each_tour_follows_the_agreed_shape():
+    # aradhyak0's structure: History 2-3 cards, Forecast ~4, Batteries 3-4, Simulate ~3, Method 1-2; 15 or fewer
+    for name, text in _tours().items():
+        tabs = _tabs_per_step(text)
+        ids = re.findall(r'\bid: "([\w-]+)"', text)
+        assert len(tabs) == len(ids), f"tour {name}: every step must start by opening its tab"
+        assert len(ids) <= 15, f"tour {name}: {len(ids)} cards"
+        n = {t: tabs.count(t) for t in ("reveal", "predict", "autopilot", "simulate", "method")}
+        assert 2 <= n["reveal"] <= 3 and 3 <= n["predict"] <= 5 and 3 <= n["autopilot"] <= 4
+        assert 2 <= n["simulate"] <= 4 and 1 <= n["method"] <= 2, f"tour {name}: {n}"
+        order = [t for i, t in enumerate(tabs) if i == 0 or t != tabs[i - 1]]
+        assert order == ["reveal", "predict", "autopilot", "simulate", "method"], f"tour {name}: {order}"
+
+
+def test_cards_are_short():
+    for name, text in _tours().items():
+        for label in re.findall(r'label: "((?:[^"\\]|\\.)*)"', text):
+            assert len(label.split()) <= 24, f"tour {name}: too long for a card: {label!r}"
+
+
+def test_simulate_places_batteries_next_to_wind_farms():
+    for name, text in _tours().items():
+        assert len(re.findall(r'\["call", "placeBatteryNear", "\w+"\]', text)) >= 2, f"tour {name}"
