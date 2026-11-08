@@ -1436,7 +1436,7 @@ async function loadSimulate() {
 // ---------- Autopilot ----------
 
 const AP_COLORS = { charge: C.ours, discharge: C.oursDeep, hold: C.grid };
-const STRATEGY_NAMES = { do_nothing: "No battery", reactive: "No forecast", forecast: "Our forecast", perfect: "Knows the future" };
+const STRATEGY_NAMES = { do_nothing: "No battery", reactive: "Without a forecast", forecast: "With our forecast", perfect: "Knows the future" };
 state.ap = { scorecard: null, day: null, date: null, strategy: "forecast", planner: "rule", battery: null, step: -1, timer: null };
 let apInit = false;
 
@@ -1484,14 +1484,16 @@ function batteryGain(sc, planner) {
   const f = cr && cr[`forecast/${planner}`], r = cr && cr[`reactive/${planner === "lp_band" ? "lp" : planner}`];
   if (f == null || !r) return null;
   const more = f / r - 1, months = h.months || [];
+  const ci0 = h.forecast_minus_reactive_ci95 && h.forecast_minus_reactive_ci95[planner];
+  const lo = ci0 && ci0.length === 2 ? Math.max(0, ci0[0] / r) : null, hi = ci0 && ci0.length === 2 ? ci0[1] / r : null;
   const when = months.length ? `Tested on ${monthSpan(months)}, months we kept aside while building it.` : "";
-  if (more <= 0) return { main: "On the months we tested, our forecast did not help a battery earn more.", note: when };
+  if (more <= 0) return { more, lo, hi, months, main: "On the months we tested, our forecast did not help a battery earn more.", note: when };
   const ci = h.forecast_minus_reactive_ci95 && h.forecast_minus_reactive_ci95[planner];
   const range = ci && ci.length === 2
     ? ` With only ${months.length} months to test on, the real gain could be anywhere from ${Math.max(0, Math.round((ci[0] / r) * 100))}% to ${Math.round((ci[1] / r) * 100)}%.`
     : "";
-  return { main: `A battery using our forecast earned about ${Math.round(more * 100)}% more than the same battery without one.`,
-           note: when + range };
+  return { more, lo, hi, months, note: when + range,
+           main: `A battery using our forecast earned about ${Math.round(more * 100)}% more than the same battery without one.` };
 }
 
 function apLpCeiling() {
@@ -1500,28 +1502,36 @@ function apLpCeiling() {
 
 function renderScorecard() {
   const sc = state.ap.scorecard, res = apResults();
-  const f = res.forecast, r = res.reactive;
   const h = sc.holdout && sc.holdout.capture_ratio;
-  const hf = h && h[`forecast/${apPlannerFor("forecast")}`], hr = h && h[`reactive/${apPlannerFor("reactive")}`];
-  const held = hf != null && hr != null;   // the fair headline: months the planning rules never saw
-  const whole = f && r ? `${fmtPct(f.capture_ratio)} vs ${fmtPct(r.capture_ratio)}` : "–";
-  const gain = held ? batteryGain(sc, apPlannerFor("forecast")) : null;
-  $("ap-plain").hidden = $("ap-plain-note").hidden = !gain;
-  if (gain) { $("ap-plain").textContent = gain.main; $("ap-plain-note").textContent = gain.note; }
-  countUp($("ap-headline"), held ? `${fmtPct(hf)} vs ${fmtPct(hr)}` : whole);
-  const period = sc.period ? `${dayFmt.format(new Date(sc.period.start))} – ${dayFmt.format(new Date(new Date(sc.period.end) - 1))}` : "";
-  $("ap-headline-sub").textContent = `Share of the best possible earnings a battery makes with our forecast vs with no forecast. ` +
-    `${sc.batteries.length} batteries. ` +
-    (apLpCeiling() ? `"Best possible" = a battery that knows the future.`
-      : `"Best possible" = the same rules, knowing what will happen that day.`) +
-    (held ? ` Headline: ${monthSpan(sc.holdout.months)}, months the planning rules were never tuned on. ` +
-      `Bars and table below: the whole period, ${period} (${whole}), which includes the tuning months.`
-      : holdoutText(sc) ? ` ${holdoutText(sc)}` : "");
-  const order = ["perfect", "forecast", "reactive", "do_nothing"].filter((k) => res[k]);
-  hbars($("ap-ratio-bars"), order.map((k) => ({ id: k, label: STRATEGY_NAMES[k], value: res[k].capture_ratio,
+  const pf = apPlannerFor("forecast"), pr = apPlannerFor("reactive");
+  const hf = h && h[`forecast/${pf}`], hr = h && h[`reactive/${pr}`];
+  const held = hf != null && hr != null;   // the fair result: months the planning rules never saw
+  const gain = held ? batteryGain(sc, pf) : null;
+  const span = held ? monthSpan(sc.holdout.months) : "";
+  // one headline: how much more a battery earns with our forecast, and how sure we are
+  if (gain && gain.more > 0) {
+    countUp($("ap-headline"), `+${Math.round(gain.more * 100)}%`);
+    $("ap-headline-sub").textContent = `Tested on ${span}, months we kept aside while building it.` +
+      (gain.hi != null ? ` With only ${gain.months.length} months, the real gain could be anywhere from ${Math.round(gain.lo * 100)}% to ${Math.round(gain.hi * 100)}%.` : "");
+  } else if (gain) {
+    $("ap-headline").textContent = "No gain";
+    $("ap-headline-sub").textContent = `On ${span} our forecast did not help a battery earn more.`;
+  } else {   // older data without held-out months: the whole period
+    const f = res.forecast, r = res.reactive;
+    countUp($("ap-headline"), f && r && r.capture_ratio > 0 ? `+${Math.round((f.capture_ratio / r.capture_ratio - 1) * 100)}%` : "–");
+    $("ap-headline-sub").textContent = "";
+  }
+  // bars: share of the most a battery could have earned, on the same months as the headline
+  const rows = held
+    ? [["perfect", (h["perfect/lp"] != null ? h["perfect/lp"] : 1)], ["forecast", hf], ["reactive", hr]]
+    : ["perfect", "forecast", "reactive"].filter((k) => res[k]).map((k) => [k, res[k].capture_ratio]);
+  hbars($("ap-ratio-bars"), rows.map(([k, v]) => ({ id: k, label: STRATEGY_NAMES[k], value: v,
     color: k === "forecast" ? C.ours : C.neutral })), { fmt: fmtPct });
+  $("ap-bars-note").textContent = `Share of the most a battery could have earned${held ? `, ${span}` : ""}.`;
+  // the full numbers, behind "Show the numbers"
+  const order = ["perfect", "forecast", "reactive", "do_nothing"].filter((k) => res[k]);
   const t = clear($("ap-scorecard"));
-  t.append(el("thead", {}, el("tr", {}, el("th", {}, "Planned with"), el("th", { class: "num" }, "Wasted wind stored"),
+  t.append(el("thead", {}, el("tr", {}, el("th", {}, "Battery"), el("th", { class: "num" }, "Wasted wind stored"),
     el("th", { class: "num" }, "Earned"), el("th", { class: "num" }, "Switch-off payments saved"))));
   const tb = el("tbody");
   for (const k of order) {
@@ -1530,8 +1540,10 @@ function renderScorecard() {
       el("td", { class: "num" }, fmtCompact(x.revenue_gbp, "£")), el("td", { class: "num" }, fmtCompact(x.payments_avoided_gbp, "£"))));
   }
   t.append(tb);
-  $("ap-score-note").textContent = "Each battery can only store wind that was really wasted, and only sell when the cables south have room. Batteries tested: " +
-    sc.batteries.map((b) => `${batteryName(b)} (${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh)`).join(", ") + ".";
+  const period = sc.period ? `${dayFmt.format(new Date(sc.period.start))} – ${dayFmt.format(new Date(new Date(sc.period.end) - 1))}` : "";
+  $("ap-score-note").textContent = `${period}, ${sc.batteries.length} batteries together: ` +
+    sc.batteries.map((b) => `${batteryName(b)} (${nf(0).format(b.power_mw)} MW)`).join(", ") +
+    ". A battery only stores wind that was really wasted, and only sells when the cables have room.";
 }
 
 async function loadApDay() {
@@ -1575,10 +1587,11 @@ function renderApDay() {
   badge.textContent = day.live ? (stale ? "live · stale" : "live") : "replay of the backtest";
   badge.className = "tag" + (day.live && !stale ? " live" : stale ? " stale" : "");
   const nDone = bat0Done(day);
-  $("ap-issued").textContent = (issued ? `Plan made ${shortFmt.format(issued)} UTC, using only what was known at that time.` : "") +
-    (nDone ? ` The first ${nDone} half hours show what the battery actually did; the rest is its plan.` : "");
+  $("ap-issued").textContent = (day.live && issued ? `Live plan, made ${shortFmt.format(issued)} UTC.`
+    : "Planned the day before, using only what was known then.") +
+    (nDone ? ` The first ${nDone} half hours are done; the rest is the plan.` : "");
   legend($("ap-legend"), [{ label: "Storing wasted wind", color: AP_COLORS.charge },
-    { label: "Selling (cables have room)", color: AP_COLORS.discharge }, { label: "Waiting", color: AP_COLORS.hold }]);
+    { label: "Selling", color: AP_COLORS.discharge }, { label: "Waiting", color: AP_COLORS.hold }]);
 
   const strip = clear($("ap-strip")), log = clear($("ap-log"));
   if (!bat) {
@@ -1589,9 +1602,7 @@ function renderApDay() {
   const steps = bat.steps;
   const caught = steps.reduce((s, x) => s + (x.captured_curtailment_mwh || 0), 0);
   const rev = steps.some((x) => x.revenue_gbp != null) ? steps.reduce((s, x) => s + (x.revenue_gbp || 0), 0) : null;
-  const n = (a) => steps.filter((x) => x.action === a).length;
-  $("ap-day-sum").textContent = `${batteryName((state.ap.scorecard.batteries.find((x) => x.battery_id === bat.battery_id)) || bat)}: stored ${fmtEnergy(caught)} of wasted wind` + (rev == null ? "" : `, earned ${fmtCompact(rev, "£")}`) +
-    ` · ${n("charge")} half hours storing, ${n("discharge")} selling, ${n("hold")} waiting`;
+  $("ap-day-sum").textContent = `Stored ${fmtEnergy(caught)} of wasted wind` + (rev == null ? "" : ` · earned ${fmtCompact(rev, "£")}`);
   strip.setAttribute("aria-label", `Actions through the day for ${bat.battery_id}`);
   const mixed = day.live || bat0Done(day) > 0;   // part done, part still a plan
   steps.forEach((x, i) => {
@@ -1599,18 +1610,32 @@ function renderApDay() {
     strip.append(el("span", { class: mixed && !x.executed ? "planned" : "",
       style: { background: AP_COLORS[x.action] || C.grid }, title: `${time} · ${x.executed ? "done" : mixed ? "planned" : x.action}: ${x.action}, ${x.reason}`,
       onmouseenter: () => highlightApStep(i, false) }));
-    log.append(el("div", { class: "row", "data-i": i },
-      el("span", { class: "t" }, time),
-      el("span", { class: "a" }, el("i", { style: { background: AP_COLORS[x.action] || C.grid } }), ({ charge: "store", discharge: "sell", hold: "wait" })[x.action] || x.action),
-      el("span", {}, el("span", { class: "what" }, logWhat(x, mixed && !x.executed)),
-        x.executed ? el("span", { class: "tag live-done" }, "done") : mixed ? el("span", { class: "tag" }, "plan") : "",
-        el("span", { class: "why" }, logWhy(x.reason)))));
   });
+  // the log: one row per run of identical half hours ("00:00–16:00 Waiting"), not 48 near-identical rows
+  const rows = steps.map((x) => ({ x, what: logWhat(x, mixed && !x.executed), why: logWhy(x.reason),
+    tag: x.executed ? "done" : mixed ? "plan" : "" }));
+  for (const g of logGroups(rows.map((r) => `${r.x.action}|${r.what}|${r.why}|${r.tag}`))) {
+    const r = rows[g.from], end = new Date(new Date(steps[g.to].period_start).getTime() + 30 * 60000);
+    const time = hourFmt.format(new Date(steps[g.from].period_start)) + (g.to > g.from ? `–${hourFmt.format(end)}` : "");
+    log.append(el("div", { class: "row", "data-from": g.from, "data-to": g.to },
+      el("span", { class: "t" }, time),
+      el("span", { class: "a" }, el("i", { style: { background: AP_COLORS[r.x.action] || C.grid } }), ({ charge: "store", discharge: "sell", hold: "wait" })[r.x.action] || r.x.action),
+      el("span", {}, el("span", { class: "what" }, r.what),
+        r.tag === "done" ? el("span", { class: "tag live-done" }, "done") : r.tag ? el("span", { class: "tag" }, "plan") : "",
+        el("span", { class: "why" }, r.why))));
+  }
   const cap = (state.ap.scorecard.batteries.find((b) => b.battery_id === bat.battery_id) || {}).energy_mwh;
   lineChart("ap-soc-chart", steps.map((x) => hourFmt.format(new Date(x.period_start))), [
     { label: "stored", data: steps.map((x) => x.soc_mwh), borderColor: C.ours, fill: "origin", backgroundColor: "rgba(14,159,191,0.12)" },
   ], { yLabel: "MWh stored" });
   if (cap) { charts["ap-soc-chart"].options.scales.y.max = cap; charts["ap-soc-chart"].update(); }
+}
+
+/** Runs of equal keys -> [{ from, to }] (inclusive indexes): consecutive identical log rows become one. */
+function logGroups(keys) {
+  const out = [];
+  keys.forEach((k, i) => { if (i && k === keys[i - 1]) out[out.length - 1].to = i; else out.push({ from: i, to: i }); });
+  return out;
 }
 
 /** Decision log, line 1: what the battery did, in the same words every time, from the executed numbers. */
@@ -1650,8 +1675,11 @@ function logWhy(reason) {
 function highlightApStep(i, scroll = true) {
   state.ap.step = i;
   document.querySelectorAll("#ap-strip span").forEach((s, j) => s.classList.toggle("now", j === i));
-  document.querySelectorAll("#ap-log .row").forEach((r) => r.classList.toggle("now", Number(r.dataset.i) === i));
-  const row = document.querySelector(`#ap-log .row[data-i="${i}"]`);
+  let row = null;   // log rows cover runs of half hours: light the one that contains step i
+  document.querySelectorAll("#ap-log .row").forEach((r) => {
+    const on = Number(r.dataset.from) <= i && i <= Number(r.dataset.to);
+    r.classList.toggle("now", on); if (on) row = r;
+  });
   if (row && scroll) { const log = $("ap-log"); log.scrollTop = row.offsetTop - log.offsetTop - 40; }
   const ch = charts["ap-soc-chart"];
   if (ch && i >= 0) {
@@ -1699,7 +1727,7 @@ async function loadAutopilot() {
       apInit = true;
       const sel = clear($("ap-battery"));
       for (const b of state.ap.scorecard.batteries) sel.append(el("option", { value: b.battery_id },
-        `${batteryName(b)} · ${b.zone === "north_scotland" ? "north of B4" : "between B4 and B6"} · ${nf(0).format(b.power_mw)} MW / ${nf(0).format(b.energy_mwh)} MWh`));
+        `${batteryName(b)} · ${nf(0).format(b.power_mw)} MW`));
       state.ap.battery = (state.ap.scorecard.batteries[0] || {}).battery_id || null;
       sel.addEventListener("change", (e) => { state.ap.battery = e.target.value; loadApDay(); });
       $("ap-strategy").addEventListener("change", (e) => { state.ap.strategy = e.target.value; loadApDay(); });
@@ -1983,7 +2011,7 @@ async function fillStorm() {   // the storm day's figures, live from the same AP
       $("about-proof").innerHTML = "";
       const g = batteryGain(sc, "lp");
       $("about-proof").append(
-        el("p", {}, el("b", {}, "Did we see the storm coming? "),
+        el("p", {}, el("b", {}, "Did we see 27 October coming? "),
           `Yes. At 10:00 the day before, our forecast said ${fmtEnergy(pred)} would be wasted on 27 October. ${fmtEnergy(act)} was.`),
         ...(g ? [el("p", {}, el("b", {}, "Does acting on it pay? "), g.main), el("p", { class: "small" }, g.note)] : []));
     }

@@ -364,43 +364,48 @@
     </div>
   </section>
   <section id="tab-autopilot" class="tab" role="tabpanel" hidden>
-    <p class="tab-intro">A battery next to the wind farms stores power that would be wasted and sells it later when the
-      cables have room. Our forecast tells it when to be empty and ready. Every result is replayed against what really happened.</p>
+    <p class="tab-intro">A battery by the wind farms stores wind that would be wasted, and sells it when the cables have
+      room. Our forecast tells it when to get ready.</p>
     <div class="hero">
-      <p id="ap-plain" class="plain" hidden></p>
-      <p id="ap-plain-note" class="plain-note" hidden></p>
-      <div class="label">Battery earnings with our forecast vs without one <span class="tag-est t-est">past months</span></div>
+      <div class="label">More earned with our forecast than without one <span class="tag-est t-est">past months</span></div>
       <div id="ap-headline" class="hero-value">–</div>
       <div id="ap-headline-sub" class="sub"></div>
     </div>
     <div id="ap-ratio-bars" class="hbars"></div>
-    <div class="table-wrap"><table id="ap-scorecard" class="table"></table></div>
-    <p id="ap-score-note" class="note"></p>
+    <p id="ap-bars-note" class="note"></p>
+    <details class="explain" id="ap-numbers"><summary>Show the numbers</summary>
+      <div class="table-wrap"><table id="ap-scorecard" class="table"></table></div>
+      <p id="ap-score-note" class="note"></p>
+    </details>
 
     <div class="block">
       <div class="detail-head">
-        <h3>One battery's day, half hour by half hour</h3>
+        <h3>Watch one battery's day</h3>
         <span id="ap-badge" class="tag"></span>
       </div>
       <div class="filter-row">
         <button type="button" id="ap-prev" class="icon-btn" aria-label="Previous day">‹</button>
         <input type="date" id="ap-date" aria-label="Day">
         <button type="button" id="ap-next" class="icon-btn" aria-label="Next day">›</button>
-        <select id="ap-strategy" aria-label="Battery plans with">
-          <option value="forecast">Plans with our forecast</option>
-          <option value="reactive">No forecast</option>
-          <option value="perfect">Knows exactly what happens</option>
-        </select>
-        <select id="ap-planner" aria-label="Planner" hidden>
-          <option value="lp">Planned by the optimiser</option>
-          <option value="lp_band" hidden>Optimiser, planning for the high end</option>
-          <option value="rule">Planned by simple rules</option>
-        </select>
+        <button type="button" id="ap-play" class="btn-secondary">▶ Replay the day</button>
       </div>
       <div class="filter-row">
         <select id="ap-battery" aria-label="Battery"></select>
-        <button type="button" id="ap-play" class="btn-secondary">▶ Replay the day</button>
+        <select id="ap-strategy" aria-label="Plans with">
+          <option value="forecast">With our forecast</option>
+          <option value="reactive">Without a forecast</option>
+          <option value="perfect">Knowing the future</option>
+        </select>
       </div>
+      <details class="explain" id="ap-more"><summary>More options</summary>
+        <div class="filter-row">
+          <select id="ap-planner" aria-label="Planner" hidden>
+            <option value="lp">Best plan (optimiser)</option>
+            <option value="lp_band" hidden>Best plan, ready for extra wind</option>
+            <option value="rule">Simple rules</option>
+          </select>
+        </div>
+      </details>
       <p id="ap-issued" class="note"></p>
       <div id="ap-day-sum" class="sub"></div>
       <div id="ap-legend" class="legend"></div>
@@ -502,7 +507,7 @@
     <section class="about-page" data-page="1">
       <p class="about-eyebrow">The problem</p>
       <h2 id="about-title">On <span class="storm-date">27 October 2026</span>, Scotland switched off <span id="storm-share">most</span> of its wind power.</h2>
-      <p class="about-lead">Storm Boelo could have given Scotland <b id="storm-potential">a lot</b> of wind power. But the power lines south to England were
+      <p class="about-lead">Storm Boelo swept in on 24–25 October, and the wind kept coming. On the 27th, Scotland's farms could have made <b id="storm-potential">a lot</b> of power. But the power lines south to England were
         <b>full</b>, so the grid <b>paid the farms to stop</b> and burned gas in England instead. <span id="storm-farms"></span></p>
       <div class="about-tiles">
         <div class="tile"><div class="label">Wind power thrown away, in one day</div><div class="value" id="storm-twh">–</div></div>
