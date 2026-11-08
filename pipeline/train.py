@@ -50,7 +50,7 @@ LGB_PARAMS = dict(objective="tweedie", tweedie_variance_power=TWEEDIE_POWER, n_e
 FC_COLS = ["farm_id", "zone", "hour_start", "issued_at", "split", "curtailed_mwh_pred",
            "curtailed_mwh_p10", "curtailed_mwh_p90", "curtailed_mwh_actual",
            "baseline_persistence_mwh", "baseline_climatology_mwh", "baseline_wind_rule_mwh",
-           "model_version", "training_days"]
+           "model_version", "training_days", "lead_days"]
 LIMIT_FEATURES = ["b4_limit_mw", "b6_limit_mw", "b4_excess_potential_mw", "b6_excess_potential_mw"]
 NO_LIMIT_FEATURES = [f for f in ft.FEATURES if f not in LIMIT_FEATURES]
 WITH_OB_FEATURES = ft.FEATURES + ft.OB_FEATURES     # #51 ablation: the model plus order-book signals
@@ -129,17 +129,17 @@ def _fit(train: pd.DataFrame, features=ft.FEATURES) -> lgb.LGBMRegressor:
     return model
 
 
-def _fit_quantile(train: pd.DataFrame, alpha: float) -> lgb.LGBMRegressor:
+def _fit_quantile(train: pd.DataFrame, alpha: float, features=ft.FEATURES) -> lgb.LGBMRegressor:
     params = {k: v for k, v in LGB_PARAMS.items() if k not in ("objective", "tweedie_variance_power")}
     model = lgb.LGBMRegressor(objective="quantile", alpha=alpha, **params)
-    model.fit(train[ft.FEATURES], train.curtailed_mwh, categorical_feature=["farm_code"])
+    model.fit(train[features], train.curtailed_mwh, categorical_feature=["farm_code"])
     return model
 
 
-def fit_all(train: pd.DataFrame) -> dict:
+def fit_all(train: pd.DataFrame, features=ft.FEATURES) -> dict:
     """Point (Tweedie) and quantile models on the same training rows."""
-    return {"curtailed_mwh_pred": _fit(train),
-            **{col: _fit_quantile(train, a) for col, a in QUANTILES.items()}}
+    return {"curtailed_mwh_pred": _fit(train, features),
+            **{col: _fit_quantile(train, a, features) for col, a in QUANTILES.items()}}
 
 
 def order_band(p10: np.ndarray, p90: np.ndarray, pred: np.ndarray | None = None):
@@ -153,10 +153,13 @@ def order_band(p10: np.ndarray, p90: np.ndarray, pred: np.ndarray | None = None)
     return lo, hi
 
 
-def predict_all(models: dict, rows: pd.DataFrame) -> pd.DataFrame:
+def predict_all(models: dict, rows: pd.DataFrame, features=ft.FEATURES) -> pd.DataFrame:
     rows = rows.copy()
-    X = rows[ft.FEATURES]
+    X = rows[features]
     rows["curtailed_mwh_pred"] = np.clip(models["curtailed_mwh_pred"].predict(X), 0, None)
+    if not all(c in models for c in QUANTILES):        # leads 2+: no band (#49, see main)
+        rows["curtailed_mwh_p10"] = rows["curtailed_mwh_p90"] = np.nan
+        return rows
     rows["curtailed_mwh_p10"], rows["curtailed_mwh_p90"] = order_band(
         models["curtailed_mwh_p10"].predict(X), models["curtailed_mwh_p90"].predict(X),
         rows["curtailed_mwh_pred"].to_numpy())
@@ -297,6 +300,32 @@ def live_rows(models: dict, baselines: dict, curt: pd.DataFrame, now: pd.Timesta
     return rows
 
 
+def week_days(now: pd.Timestamp) -> list[tuple[int, pd.Timestamp]]:
+    """(lead_days, day) for the live week: tomorrow is lead 1, then one lead per day after."""
+    return [(k, now.normalize() + pd.Timedelta(days=k)) for k in ft.LEADS]
+
+
+def live_week_rows(models: dict, baselines: dict, curt: pd.DataFrame, now: pd.Timestamp) -> pd.DataFrame:
+    """#49: forecast rows for the next 6 days issued now, day k from lead k's models (models[k],
+    baselines[k]); leads without saved models are skipped. Lead 1 is exactly live_rows' tomorrow."""
+    days = [(k, d) for k, d in week_days(now) if k in models]
+    weather, lim, dem_h = live_inputs(now, days[0][1], n_days=len(ft.LEADS))
+    farms = pd.read_csv(ft.ROOT / "reference" / "farms.csv")
+    zone_pot = ft.zone_potential(weather, farms, ft.commissioning(curt))
+    y = ft.hourly_target(curt)
+    out = []
+    for k, day in days:
+        w = weather[(weather.hour_start >= day) & (weather.hour_start < day + pd.Timedelta(days=1))]
+        p = w.assign(issued_at=now, asof_wind=now, **({"asof_limits": now} if k == 1 else {}))
+        rows = ft.add_signals(p, curt, y, farms, lim, dem_h, zone_pot, lead_days=k)
+        ft.check_no_leakage(rows)
+        rows = apply_baselines(predict_all(models[k], rows, lead_features(k)), baselines[k])
+        rows["curtailed_mwh_actual"], rows["lead_days"] = np.nan, k
+        rows["training_days"] = training_days(curt.period_start)
+        out.append(rows)
+    return pd.concat(out, ignore_index=True)
+
+
 def interval_stats(bt: pd.DataFrame) -> dict:
     """Empirical coverage of the p10-p90 band, overall and on hours that really had waste.
 
@@ -321,12 +350,18 @@ def interval_stats(bt: pd.DataFrame) -> dict:
             "mean_width_mwh": round(float((hi - lo).mean()), 2)}
 
 
-def save_models(models: dict, baselines: dict) -> None:
+def lead_dir(lead_days: int):
+    """Saved models for a lead: lead 1 where they always were, lead k in models/lead{k}/."""
+    return MODEL_DIR if lead_days == 1 else MODEL_DIR / f"lead{lead_days}"
+
+
+def save_models(models: dict, baselines: dict, lead_days: int = 1) -> None:
     """Persist the final models and baselines for pipeline.live_forecast."""
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    d = lead_dir(lead_days)
+    d.mkdir(parents=True, exist_ok=True)
     for col, m in models.items():
-        m.booster_.save_model(str(MODEL_DIR / f"{col}.txt"))
-    pd.to_pickle(baselines, MODEL_DIR / "baselines.pkl")
+        m.booster_.save_model(str(d / f"{col}.txt"))
+    pd.to_pickle(baselines, d / "baselines.pkl")
 
 
 def shap_values(model: lgb.LGBMRegressor, X: pd.DataFrame) -> pd.Series:
@@ -360,24 +395,36 @@ def main():
             shaps.append(out.attrs.pop("shap"))
         folds.append(out)
     full_bt = pd.concat(folds, ignore_index=True)
-    full_bt["split"], full_bt["model_version"] = "backtest", version
+    full_bt["split"], full_bt["model_version"], full_bt["lead_days"] = "backtest", version, 1
     full_bt["curtailed_mwh_actual"] = full_bt.curtailed_mwh
     fc = full_bt[FC_COLS]
     bt = headline_rows(full_bt, months)                     # every headline number below
 
-    # Live: tomorrow, from a model fitted on everything. Network problems keep the backtest.
+    # Live: the next 6 days (#49), each lead's models fitted on everything for that lead (leads 2+
+    # rebuild the panel with their own cut-offs). Leads 2+ get the point model only: their quantile
+    # band was never calibrated and contradicted the point forecast (day 4: 3 MWh expected, summed
+    # p90 26 GWh), so no band is published for them. Network problems keep the backtest.
+    finals, bases = {1: fit_all(panel)}, {1: fit_baselines(panel)}
+    save_models(finals[1], bases[1])
+    del panel
+    for k in ft.LEADS[1:]:
+        pk = ft.load_and_build(k)
+        ft.check_no_leakage(pk)
+        finals[k], bases[k] = {"curtailed_mwh_pred": _fit(pk, lead_features(k))}, fit_baselines(pk)
+        save_models(finals[k], bases[k], k)
+        log.info("lead %d: final models on %d farm-hours", k, len(pk))
+        del pk
     try:
         now = pd.Timestamp.now(tz="UTC").floor("min")
-        final, base = fit_all(panel), fit_baselines(panel)
-        save_models(final, base)
         curt = pd.read_parquet(ft.PROCESSED / "curtailment.parquet",
                                columns=["farm_id", "zone", "period_start", "curtailed_mwh_a",
                                         "bid_price_gbp_mwh"])
-        live = live_rows(final, base, curt, now)
+        live = live_week_rows(finals, bases, curt, now)
         live["split"], live["model_version"] = "live", version
         fc = pd.concat([fc, live[FC_COLS]], ignore_index=True)
-        log.info("live: %d farm-hours for %s, issued %s, total %.0f MWh", len(live),
-                 f"{live.hour_start.min():%Y-%m-%d}", now, live.curtailed_mwh_pred.sum())
+        log.info("live: %d farm-hours, %s to %s, issued %s; MWh by lead %s", len(live),
+                 f"{live.hour_start.min():%Y-%m-%d}", f"{live.hour_start.max():%Y-%m-%d}", now,
+                 live.groupby("lead_days").curtailed_mwh_pred.sum().round(0).to_dict())
     except Exception as e:  # noqa: BLE001 - the backtest is still valid without live rows
         log.warning("live forecast skipped: %s", e)
     fc.to_parquet(ft.PROCESSED / "forecast.parquet", index=False)

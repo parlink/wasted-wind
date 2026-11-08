@@ -202,21 +202,54 @@ def reveal_boundaries(start: Optional[str] = None, end: Optional[str] = None):
 
 # ---------- forecast ----------
 
-@app.get("/api/forecast/tomorrow")
-def forecast_tomorrow():
-    fc, src = data.table("forecast.parquet")
+def _latest_live(fc: pd.DataFrame) -> pd.DataFrame:
     live = fc[fc["split"] == "live"]
+    if live.empty:
+        return live
+    live = live[live["issued_at"] == live["issued_at"].max()]
+    return live.assign(lead_days=data.lead_days(live))
+
+
+@app.get("/api/forecast/tomorrow")
+def forecast_tomorrow(lead_days: int = Query(1, ge=1, le=7)):
+    """The day-ahead (lead 1), or with lead_days=k the day k days after the issue date (#49)."""
+    fc, src = data.table("forecast.parquet")
+    live = _latest_live(fc)
+    live = live[live["lead_days"] == lead_days] if len(live) else live
     if live.empty:
         return {"issued_at": None, "farms": [], "meta": meta(src, note="no live forecast available")}
     issued = live["issued_at"].max()
-    live = live[live["issued_at"] == issued].sort_values("hour_start")
+    live = live.sort_values("hour_start")
     out = []
     for fid, g in live.groupby("farm_id", sort=False):
         h = g[["hour_start", "curtailed_mwh_pred", "curtailed_mwh_p10", "curtailed_mwh_p90"]]
         h = h.rename(columns={"curtailed_mwh_pred": "pred_mwh", "curtailed_mwh_p10": "p10_mwh",
                               "curtailed_mwh_p90": "p90_mwh"})
         out.append({"farm_id": fid, "hours": records(h)})
-    return {"issued_at": iso(issued), "farms": out, "meta": meta(src)}
+    return {"issued_at": iso(issued), "lead_days": lead_days, "farms": out, "meta": meta(src)}
+
+
+@app.get("/api/forecast/week")
+def forecast_week():
+    """#49: one row per live day, all farms summed: the forecast and the summed hourly p10/p90
+    (a sum of farm-hour ranges, not a band for the day). kind = "outlook" from the first lead where the
+    simple wind rule beat the model in the backtest (forecast_skill_by_lead.json), else "forecast"."""
+    fc, src = data.table("forecast.parquet")
+    live = _latest_live(fc)
+    if live.empty:
+        return {"issued_at": None, "days": [], "meta": meta(src, note="no live forecast available")}
+    skill = _skill_by_lead(src) or []
+    outlook_from = min((r["lead_days"] for r in skill if r["wind_rule_mae_mwh"] < r["mae_mwh"]), default=None)
+    g = live.groupby("lead_days").agg(date=("hour_start", "min"), pred_mwh=("curtailed_mwh_pred", "sum"))
+    for c in ("curtailed_mwh_p10", "curtailed_mwh_p90"):      # null when the day has no band (leads 2+)
+        g[c] = live.groupby("lead_days")[c].sum(min_count=1)
+    opt = lambda v: None if pd.isna(v) else float(v)  # noqa: E731
+    days = [{"date": r.date.strftime("%Y-%m-%d"), "lead_days": int(k), "pred_mwh": float(r.pred_mwh),
+             "p10_mwh": opt(r.curtailed_mwh_p10), "p90_mwh": opt(r.curtailed_mwh_p90),
+             "kind": "outlook" if outlook_from is not None and k >= outlook_from else "forecast"}
+            for k, r in g.sort_index().iterrows()]
+    return {"issued_at": iso(live["issued_at"].max()), "outlook_from_lead": outlook_from, "days": days,
+            "meta": meta(src)}
 
 
 @app.get("/api/forecast/backtest")

@@ -729,11 +729,45 @@ function renderLeadSkill(rows) {
     `the weather archive keeps old forecasts.`;
 }
 
+// #49: the next 6 days. Day 1 (tomorrow) is the day-ahead forecast every other number on the tab is about.
+function renderWeek() {
+  const w = state.week, strip = clear($("week-strip"));
+  const days = (w && w.days) || [];
+  strip.hidden = $("week-note").hidden = days.length < 2;
+  if (days.length < 2) return;
+  const lead = (state.tomorrow && state.tomorrow.lead_days) || 1;
+  const max = Math.max(...days.map((d) => d.pred_mwh), 1e-9);
+  const wd = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", timeZone: "UTC" });   // "Tue 10": one line
+  for (const d of days) {
+    const sel = d.lead_days === lead;
+    strip.append(el("button", { type: "button", role: "tab", class: `week-day ${d.kind}`, "aria-selected": String(sel),
+      title: `${dayFmt.format(new Date(d.date))}. ${d.kind === "outlook" ? "Outlook" : "Forecast"} made ${d.lead_days} day${d.lead_days > 1 ? "s" : ""} ahead.` +
+        (d.p90_mwh != null ? ` Likely range (farm ranges added up): ${fmtEnergy(d.p10_mwh)} – ${fmtEnergy(d.p90_mwh)}` : " No range: only the day-ahead's range is calibrated."),
+      onclick: () => selectLead(d.lead_days) },
+      el("span", { class: "wd-date" }, d.lead_days === 1 ? `Tomorrow · ${wd.format(new Date(d.date))}` : wd.format(new Date(d.date))),
+      el("span", { class: "wd-val" }, d.pred_mwh < 0.5 ? "≈ 0 MWh" : fmtEnergy(d.pred_mwh)),
+      el("span", { class: "wd-bar", style: { width: `${Math.max(2, d.pred_mwh / max * 100)}%` } })));
+  }
+  const ol = w.outlook_from_lead;
+  $("week-note").textContent = ol ? `Days ${ol}–${days.length} (dashed) are an outlook: in the backtest, from ${ol} days ahead a ` +
+    `simple windy-day rule missed less hour by hour (see "How far ahead can we see?" below). Grid limits are only published ` +
+    `the day before, so days 2+ forecast without them.` : "Grid limits are only published the day before, so days 2+ forecast without them.";
+}
+
+async function selectLead(k) {
+  try {
+    state.tomorrow = await api(`/api/forecast/tomorrow?lead_days=${k}`);
+    renderWeek(); renderPredict(); updateMap();
+  } catch (e) { showError(e); }
+}
+
 async function loadPredict() {
   const tab = $("tab-predict");
   tab.classList.add("loading");
   try {
-    if (!state.tomorrow) [state.tomorrow, state.metrics] = await Promise.all([api("/api/forecast/tomorrow"), api("/api/forecast/metrics")]);
+    if (!state.tomorrow) [state.tomorrow, state.metrics, state.week] = await Promise.all([
+      api("/api/forecast/tomorrow"), api("/api/forecast/metrics"), api("/api/forecast/week").catch(() => null)]);
+    renderWeek();
     noteSource("forecast", state.tomorrow.meta);
     $("pred-fake").hidden = state.tomorrow.meta.source !== "fixtures";
     renderPredict();
@@ -748,7 +782,9 @@ function renderPredict() {
   const farms = tm.farms || [];
   const sel = state.farm && farms.find((f) => f.farm_id === state.farm);
   const scope = sel ? [sel] : farms;
-  $("pred-scope").textContent = sel ? `Wind expected to be wasted tomorrow at ${farmName(sel.farm_id)}` : "Wind expected to be wasted tomorrow, all farms";
+  const lead = tm.lead_days || 1;
+  const when = lead === 1 ? "tomorrow" : `on ${dayFmt.format(new Date((farms[0] && farms[0].hours[0] && farms[0].hours[0].hour_start) || Date.now()))}`;
+  $("pred-scope").textContent = sel ? `Wind expected to be wasted ${when} at ${farmName(sel.farm_id)}` : `Wind expected to be wasted ${when}, all farms`;
 
   // hourly totals across the scope (summing farm ranges overstates the joint range: labelled)
   const hours = (scope[0] && scope[0].hours.map((h) => h.hour_start)) || [];

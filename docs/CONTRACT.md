@@ -99,6 +99,7 @@ and the live "tomorrow" forecast. Primary key: (`farm_id`, `hour_start`, `issued
 | `baseline_wind_rule_mwh` | float | One-line threshold rule on Scottish forecast potential. |
 | `model_version` | str | e.g. `lgbm-2026-11-07a`. |
 | `training_days` | int, nullable | Days of history the model behind this row was trained on (#50). `backtest`: that month's fold (about 115 for July 2024, growing each month). `live`: the full history. Missing in files built before data-v15. |
+| `lead_days` | int | Days from the issue date to the forecast day (#49). `backtest`: always 1 (the day-ahead; other leads are scored in `forecast_skill_by_lead.json`). `live`: 1 = tomorrow … 6, one issue covering the next 6 days, each day from its own lead's models (no NESO limits beyond lead 1). Anything wanting the day-ahead filters `lead_days == 1`; files before data-v15 have no column and every row is lead 1 (`app.data.lead_days` derives it). |
 
 The dispatcher works in half hours: split each hourly value equally into its two half hours.
 
@@ -259,8 +260,9 @@ Every response body includes:
 | `GET /api/reveal/summary?start&end` | `{"totals": {"curtailed_twh", "payments_gbp", "replacement_gas_gbp", "co2_t", "homes_equiv", "by_boundary_twh": {"B4", "B6"}}, "farms": [{"farm_id", "curtailed_mwh", "potential_mwh", "share_wasted"}]}` (`potential_mwh` = Σ `planned_mwh`, so `share_wasted` is the share of planned output) |
 | `GET /api/reveal/farm/{farm_id}?start&end` | `{"farm_id", "series": [{"period_start", "planned_mwh", "accepted_mwh", "metered_mwh", "curtailed_mwh_a", "curtailed_mwh_b"}]}` |
 | `GET /api/reveal/boundaries?start&end` | `{"boundaries": [{"boundary": "B4", "share_periods_binding": 0.42, "approximate": true}]}` |
-| `GET /api/forecast/tomorrow` | `{"issued_at", "farms": [{"farm_id", "hours": [{"hour_start", "pred_mwh", "p10_mwh", "p90_mwh"}]}]}` |
 | `GET /api/forecast/backtest?farm_id&start&end` | `{"farm_id", "series": [{"hour_start", "pred_mwh", "actual_mwh", "persistence_mwh", "climatology_mwh", "wind_rule_mwh"}]}` |
+| `GET /api/forecast/tomorrow?lead_days=1` | `{"issued_at", "lead_days", "farms": [{"farm_id", "hours": [{"hour_start", "pred_mwh", "p10_mwh", "p90_mwh"}]}]}`: the latest live issue's day `lead_days` days ahead (default 1 = tomorrow, as before) |
+| `GET /api/forecast/week` | `{"issued_at", "outlook_from_lead", "days": [{"date", "lead_days", "pred_mwh", "p10_mwh", "p90_mwh", "kind"}]}`: one row per live day, all farms; p10/p90 are farm-hour ranges added up (not a band for the day); `kind` = `outlook` from the first lead where the wind rule beat the model in `forecast_skill_by_lead.json`, else `forecast` |
 | `GET /api/forecast/metrics` | contents of `model_metrics.json`, plus `skill_by_lead`: the `chart` rows of `forecast_skill_by_lead.json`, or `null` if not built |
 | `GET /api/autopilot/schedule?date&battery_id` | `{"plan_issued_at", "live": bool, "batteries": [{"battery_id", "steps": [{"period_start", "action", "power_mw", "soc_mwh", "reason"}]}]}` |
 | `GET /api/autopilot/scorecard` | contents of `scorecard.json` |

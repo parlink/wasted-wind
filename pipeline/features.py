@@ -261,14 +261,15 @@ def add_signals(p: pd.DataFrame, curt: pd.DataFrame, y: pd.DataFrame, farms: pd.
     return p.sort_values(["hour_start", "farm_id"]).reset_index(drop=True)
 
 
-def load_and_build() -> pd.DataFrame:
+def load_and_build(lead_days: int = 1) -> pd.DataFrame:
     curt = pd.read_parquet(PROCESSED / "curtailment.parquet",
                            columns=["farm_id", "zone", "period_start", "curtailed_mwh_a", "bid_price_gbp_mwh"])
     farms = pd.read_csv(ROOT / "reference" / "farms.csv")
     ndf = _concat_parquet(sorted((RAW / "elexon" / "NDF").glob("*.parquet")),
                           ["publishTime", "startTime", "demand"])
     from pipeline import orderbook as ob
-    return build_panel(curt, farms, load_weather_forecast(), load_limits(), ndf, ob.load_daily(farms))
+    ob_daily = ob.load_daily(farms) if lead_days == 1 else None      # the order-book ablation is day-ahead only
+    return build_panel(curt, farms, load_weather_forecast(lead_days), load_limits(), ndf, ob_daily, lead_days)
 
 
 def load_limits() -> pd.DataFrame:

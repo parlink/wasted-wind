@@ -38,11 +38,12 @@ class _Booster:
         self.booster = lgb.Booster(model_file=str(path))
 
     def predict(self, X: pd.DataFrame):
-        return self.booster.predict(X[ft.FEATURES])
+        return self.booster.predict(X[self.booster.feature_name()])   # each lead has its own signals
 
 
-def load_models(model_dir: Path = tr.MODEL_DIR):
-    cols = ["curtailed_mwh_pred", *tr.QUANTILES]
+def load_models(model_dir: Path = tr.MODEL_DIR, band: bool = True):
+    """band=False (leads 2+, #49): the point model only."""
+    cols = ["curtailed_mwh_pred", *(tr.QUANTILES if band else [])]
     missing = [c for c in cols if not (model_dir / f"{c}.txt").exists()]
     if missing:
         raise FileNotFoundError(f"run `python -m pipeline.train` first; missing {missing} in {model_dir}")
@@ -50,10 +51,17 @@ def load_models(model_dir: Path = tr.MODEL_DIR):
 
 
 def build_live(now: pd.Timestamp) -> pd.DataFrame:
-    """Tomorrow's rows (CONTRACT §4 columns) from the saved models. Needs the network."""
-    models, baselines = load_models()
+    """The next 6 days' rows (CONTRACT §4 columns) from the saved models (#49: one set per lead;
+    leads whose models aren't saved yet are skipped, lead 1 is required). Needs the network."""
+    models, baselines = {}, {}
+    for k in ft.LEADS:
+        try:
+            models[k], baselines[k] = load_models(tr.lead_dir(k), band=k == 1)
+        except FileNotFoundError:
+            if k == 1:
+                raise
     curt = pd.read_parquet(ft.PROCESSED / "curtailment.parquet", columns=CURT_COLS)
-    rows = tr.live_rows(models, baselines, curt, now)
+    rows = tr.live_week_rows(models, baselines, curt, now)
     version = (pd.read_parquet(FORECAST, columns=["model_version"]).model_version.iloc[0]
                if FORECAST.exists() else "unknown")
     rows["split"], rows["model_version"] = "live", version

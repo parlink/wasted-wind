@@ -240,3 +240,14 @@ def test_forecast_metrics_include_skill_by_days_ahead():
     rows = _ok("/api/forecast/metrics")["skill_by_lead"]
     assert [r["lead_days"] for r in rows] == list(range(1, len(rows) + 1))
     assert {"lead_days", "mae_mwh", "baseline_mae_mwh", "wind_rule_mae_mwh", "recall", "n"} <= set(rows[0])
+
+def test_week_endpoint_and_tomorrow_stays_the_day_ahead():
+    # #49: fixtures have one live day (lead 1); /tomorrow is lead 1 and /week lists every live day
+    t = _ok("/api/forecast/tomorrow")
+    w = _ok("/api/forecast/week")
+    assert w["days"] and w["days"][0]["lead_days"] == 1
+    d0 = w["days"][0]
+    assert {"date", "lead_days", "pred_mwh", "p10_mwh", "p90_mwh", "kind"} <= set(d0)
+    total = sum(h["pred_mwh"] for f in t["farms"] for h in f["hours"])
+    assert d0["pred_mwh"] == pytest.approx(total)
+    assert _ok("/api/forecast/tomorrow?lead_days=1")["farms"] == t["farms"]
